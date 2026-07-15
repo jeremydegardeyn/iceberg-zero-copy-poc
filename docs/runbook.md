@@ -6,6 +6,7 @@ Companion to `iceberg-zero-copy-share-spec.md`. All commands in execution order.
 
 - GCP project with billing enabled; you have `Owner` or equivalent for setup.
 - Snowflake trial: sign up at signup.snowflake.com → **Enterprise** edition (default) → cloud **AWS** → region near your GCS region (e.g., GCS `us-central1` → Snowflake `AWS us-east-1` or `us-west-2`).
+- Set a default warehouse once (`ALTER USER <username> SET DEFAULT_WAREHOUSE = COMPUTE_WH;`) — otherwise every new session must run `USE WAREHOUSE ...` before any `SELECT`.
 - Note: GCP renamed BigLake → "Lakehouse for Apache Iceberg" (Apr 2026), but all APIs/CLI/IAM names still say `biglake`.
 
 Set once (bash):

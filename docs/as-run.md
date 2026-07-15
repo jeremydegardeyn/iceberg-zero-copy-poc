@@ -26,6 +26,12 @@ snow sql -q "SELECT CURRENT_REGION(), CURRENT_ROLE()"
 # → AWS_US_EAST_2, ACCOUNTADMIN
 ```
 
+Set a default warehouse once so no session ever needs `USE WAREHOUSE`:
+
+```
+snow sql -q "ALTER USER <username> SET DEFAULT_WAREHOUSE = COMPUTE_WH"
+```
+
 ## 1. GCP: bucket + Iceberg REST catalog (~2 min)
 
 ```bash
