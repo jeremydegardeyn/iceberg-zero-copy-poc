@@ -17,7 +17,7 @@ gcloud biglake iceberg catalogs create "$BUCKET" \
 echo "Looking up catalog runtime service account..."
 for i in $(seq 1 10); do
   RUNTIME_SA=$(gcloud biglake iceberg catalogs describe "$BUCKET" --project "$PROJECT_ID" \
-    --format='value(credentialInfo.serviceAccount)' 2>/dev/null || true)
+    --format='value(biglakeServiceAccount)' 2>/dev/null || true)
   [ -n "${RUNTIME_SA:-}" ] && break
   sleep 15
 done

@@ -23,9 +23,12 @@ case "$STEP" in
     ;;
   grant)
     WIF_SUBJECT="${2:?pass WORKLOAD_IDENTITY_FEDERATION_SUBJECT from DESC CATALOG INTEGRATION}"
+    MEMBER="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_ID/subject/$WIF_SUBJECT"
     gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-      --role roles/biglake.viewer \
-      --member "principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_ID/subject/$WIF_SUBJECT"
+      --role roles/biglake.viewer --condition=None --member "$MEMBER"
+    # x-goog-user-project header requires the caller to hold serviceusage.services.use
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+      --role roles/serviceusage.serviceUsageConsumer --condition=None --member "$MEMBER"
     echo "Granted. Now run SELECT SYSTEM\$VERIFY_CATALOG_INTEGRATION('biglake_catalog_int'); in Snowflake."
     ;;
   *) echo "unknown step: $STEP" >&2; exit 1 ;;

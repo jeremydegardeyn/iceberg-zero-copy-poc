@@ -6,6 +6,7 @@ Zero-copy sharing of GCS-resident Apache Iceberg tables to Snowflake on AWS, via
 
 - `docs/spec.md` — architecture spec (options, cost model, risks)
 - `docs/runbook.md` — full POC runbook with troubleshooting
+- `docs/as-run.md` — as-run log from the successful 2026-07-14 execution (fastest path to reproduce)
 - `docs/architecture/overview.md` — ARB diagrams (context, auth sequence, trust boundaries, decision flow)
 - `docs/adr/` — architecture decision records (index in `docs/adr/README.md`)
 - `env.example.sh` — copy to `env.sh`, fill in, `source` it (gitignored)

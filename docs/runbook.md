@@ -119,6 +119,7 @@ CREATE OR REPLACE CATALOG INTEGRATION biglake_catalog_int
     CATALOG_URI = 'https://biglake.googleapis.com/iceberg/v1/restcatalog'
     CATALOG_NAME = 'gs://<BUCKET>'
     ADDITIONAL_HEADERS = ( "x-goog-user-project" = '<PROJECT_ID>' )
+    ACCESS_DELEGATION_MODE = VENDED_CREDENTIALS
   )
   REST_AUTHENTICATION = (
     TYPE = OAUTH
@@ -136,10 +137,16 @@ DESC CATALOG INTEGRATION biglake_catalog_int;
 **3d. In GCP**, grant the Snowflake principal read access (least privilege — vending handles storage):
 
 ```bash
+MEMBER="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_ID/subject/<WIF_SUBJECT_FROM_3c>"
 gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --role roles/biglake.viewer \
-  --member "principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_ID/subject/<WIF_SUBJECT_FROM_3c>"
+  --role roles/biglake.viewer --condition=None --member "$MEMBER"
+# The x-goog-user-project header makes Snowflake bill API usage to your project,
+# which requires serviceusage.services.use:
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --role roles/serviceusage.serviceUsageConsumer --condition=None --member "$MEMBER"
 ```
+
+Note: `CREATE OR REPLACE CATALOG INTEGRATION` mints a **new** WIF subject — rerun the grants (and remove the old subject's) after any replace.
 
 **3e. In Snowflake**, verify before proceeding:
 
@@ -196,6 +203,8 @@ gcloud iam workload-identity-pools delete $POOL_ID --project $PROJECT_ID --locat
 | Symptom | Likely cause / fix |
 |---|---|
 | `SYSTEM$VERIFY_CATALOG_INTEGRATION` auth error | Issuer URL or audience mismatch; recheck 3a/3b. Subject not yet granted (3d). |
+| Verify fails: "Caller does not have required permission to use project" | WIF subject lacks `roles/serviceusage.serviceUsageConsumer` (needed for `x-goog-user-project`). |
+| CLD create fails: "did not have credential vending enabled" | Recreate integration with `ACCESS_DELEGATION_MODE = VENDED_CREDENTIALS` in `REST_CONFIG`; then re-grant the NEW WIF subject. |
 | CLD created but no schemas appear | Discovery lag (wait), or `biglake.viewer` missing, or wrong `CATALOG_NAME`. |
 | Table listed but SELECT fails on storage | Vending not honored → external-volume fallback (Phase 4). Also check runtime SA has `storage.objectUser` (Phase 1). |
 | Spark job can't create table | Dataproc version < 2.3.10 (no GoogleAuthManager) — pin `--version 2.3`. |

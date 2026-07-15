@@ -11,6 +11,7 @@ CREATE OR REPLACE CATALOG INTEGRATION biglake_catalog_int
     CATALOG_URI = 'https://biglake.googleapis.com/iceberg/v1/restcatalog'
     CATALOG_NAME = 'gs://<BUCKET>'
     ADDITIONAL_HEADERS = ( "x-goog-user-project" = '<PROJECT_ID>' )
+    ACCESS_DELEGATION_MODE = VENDED_CREDENTIALS  -- required for CLD without an external volume
   )
   REST_AUTHENTICATION = (
     TYPE = OAUTH
