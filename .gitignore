@@ -3,3 +3,6 @@ env.sh
 *.pem
 .DS_Store
 __pycache__/
+terraform/.build/
+*.tfstate*
+.terraform/

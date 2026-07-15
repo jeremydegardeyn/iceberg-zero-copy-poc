@@ -1,0 +1,25 @@
+# Integrity-control config: one stanza per feed; the framework is code-once.
+# Run: ./scripts/09_validate.sh   (POC: manual; production: same script as a
+# Cloud Run job on a Scheduler cron + post-batch event)
+feeds:
+  - table: shared_aws.events
+    description: streaming feed (Pub/Sub -> Dataflow)
+    source: none            # Pub/Sub is ephemeral; producers emit audit counts in production
+    checks:
+      row_count_lake_vs_snowflake: {tolerance: 0}
+      nulls: {columns: [event_id, published_at], max: 0}
+      dupes: {keys: [event_id], max: 0}   # event_id is random in the generator; dupes possible but unlikely
+      freshness_lag: {report_only: true}
+
+  - table: shared_aws.batch_events
+    description: batch feed (CSV drop -> Dataflow)
+    source:
+      type: gcs_csv_archive
+      bucket: scs-raw-archive
+      pattern: "events-*.csv"
+      sum_column: amount     # csv col 3
+    checks:
+      row_count_source_vs_lake_vs_snowflake: {tolerance: 0}
+      sum_source_vs_snowflake: {column: amount, tolerance: 0.01}
+      nulls: {columns: [event_id, published_at], max: 0}
+      freshness_lag: {report_only: true}

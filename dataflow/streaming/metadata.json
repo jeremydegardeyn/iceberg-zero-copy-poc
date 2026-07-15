@@ -1,0 +1,33 @@
+{
+  "name": "Pub/Sub to Iceberg (BigLake REST catalog) — streaming",
+  "description": "Reads JSON events from a Pub/Sub subscription and streams them into an Apache Iceberg table via the BigLake Iceberg REST catalog.",
+  "parameters": [
+    {
+      "name": "project_id",
+      "label": "GCP project id",
+      "helpText": "Project that owns the BigLake catalog (x-goog-user-project)."
+    },
+    {
+      "name": "catalog",
+      "label": "Catalog / bucket name",
+      "helpText": "BigLake Iceberg catalog name; equals the GCS bucket name in single-bucket mode."
+    },
+    {
+      "name": "subscription",
+      "label": "Pub/Sub subscription",
+      "helpText": "Full path: projects/<p>/subscriptions/<s>."
+    },
+    {
+      "name": "table",
+      "label": "Destination Iceberg table",
+      "helpText": "namespace.table (auto-created on first commit).",
+      "isOptional": true
+    },
+    {
+      "name": "commit_seconds",
+      "label": "Commit interval seconds",
+      "helpText": "Iceberg snapshot commit cadence; drives consumer freshness.",
+      "isOptional": true
+    }
+  ]
+}

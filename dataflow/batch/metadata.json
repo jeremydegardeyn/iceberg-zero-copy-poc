@@ -1,0 +1,27 @@
+{
+  "name": "CSV to Iceberg (BigLake REST catalog) — batch",
+  "description": "Reads a CSV from GCS, writes rows to an Apache Iceberg table via the BigLake Iceberg REST catalog, then archives the input file on success.",
+  "parameters": [
+    {
+      "name": "input",
+      "label": "Input CSV",
+      "helpText": "gs://bucket/file.csv (header: event_id,source,amount,published_at)."
+    },
+    {
+      "name": "project_id",
+      "label": "GCP project id",
+      "helpText": "Project that owns the BigLake catalog (x-goog-user-project)."
+    },
+    {
+      "name": "catalog",
+      "label": "Catalog / bucket name",
+      "helpText": "BigLake Iceberg catalog name; equals the GCS bucket name in single-bucket mode."
+    },
+    {
+      "name": "table",
+      "label": "Destination Iceberg table",
+      "helpText": "namespace.table (auto-created on first commit).",
+      "isOptional": true
+    }
+  ]
+}

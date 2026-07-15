@@ -10,8 +10,12 @@ Zero-copy sharing of GCS-resident Apache Iceberg tables to Snowflake on AWS, via
 - `docs/architecture/overview.md` — ARB diagrams (context, auth sequence, trust boundaries, decision flow)
 - `docs/adr/` — architecture decision records (index in `docs/adr/README.md`)
 - `env.example.sh` — copy to `env.sh`, fill in, `source` it (gitignored)
-- `scripts/` — GCP-side setup, ordered
+- `scripts/` — GCP-side setup + pipeline execution, ordered
 - `sql/` — Snowflake-side setup, ordered
+- `dataflow/` — flex templates: streaming (Pub/Sub→Iceberg) + batch (CSV→Iceberg), shared Java-enabled launcher image
+- `trigger/` — Cloud Run functions: file-drop launcher + event-driven archive-on-success
+- `validation.yaml` + `scripts/validate.py` — config-driven integrity controls (source vs lake vs Snowflake)
+- `terraform/` — IaC for everything terraform-able (README documents what isn't and why)
 
 ## Execution order
 

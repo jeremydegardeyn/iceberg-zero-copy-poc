@@ -109,6 +109,58 @@ snow sql -q "SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.DATA_TRANSFER_HISTORY WHERE t
 
 ACCOUNT_USAGE lags up to ~2 h — check this well after the reads.
 
+## Extension run (2026-07-15 PM): streaming + batch flex templates
+
+Both pipelines proven end-to-end into the same catalog, read zero-copy from
+Snowflake. Full architecture: `dataflow/` (two flex templates, shared
+Java-enabled launcher Dockerfile), `trigger/` (launcher + event-driven
+archiver functions), `validation.yaml` + `scripts/validate.py` (integrity
+controls), `terraform/` (IaC for everything terraform-able).
+
+```bash
+./scripts/04_pubsub_streaming_setup.sh   # topic+sub, AR repo, IAM
+./scripts/05_build_templates.sh          # both templates via Cloud Build (~8 min each)
+./scripts/07_deploy_batch_trigger.sh     # both functions (launch + archive)
+./scripts/06_run_streaming.sh 10         # publish 10 random events, launch stream job
+./scripts/08_run_batch.sh 25             # drop random CSV -> trigger -> batch job
+./scripts/09_validate.sh                 # three-way integrity report
+./scripts/06_run_streaming.sh cancel     # stop the streaming worker when done
+```
+
+Results: streaming Pub/Sub→Iceberg with `GoogleAuthManager` (auto-refreshing
+auth, no 1 h token cliff — the static-token limitation in Google's guide is
+avoidable); batch CSV→Iceberg with file-drop trigger and archive-on-success;
+validation PASS with sums reconciling exactly (50 rows: source=lake=Snowflake,
+25688.93 == 25688.93).
+
+**Failures hit, in order (all fixed in the code here):**
+1. `ZONE_RESOURCE_POOL_EXHAUSTED` us-central1-b — launcher VM ignores
+   `--worker-zone`; moved compute to us-east1 + e2 machine family for launcher
+   AND workers + Streaming Engine (stockouts are per-family-per-zone; CUDs
+   don't reserve capacity, reservations do).
+2. `Missing required option: project` — argparse abbreviation matching ate
+   Beam's `--project` as a prefix of `--project_id`; `allow_abbrev=False`.
+3. `Java must be installed` — managed Iceberg I/O is cross-language; custom
+   launcher image (dataflow/Dockerfile) adds a JRE.
+4. 400 `X-Iceberg-Access-Delegation` — vended-credentials catalogs require the
+   header on ALL table ops (Spark had it; the Dataflow configs initially didn't).
+   Streaming jobs mask this as an infinite retry loop while showing Running.
+5. Phantom archive — flex-launcher `wait_until_finish()` is a no-op; it
+   archived the input mid-preflight. Archive is now event-driven via a Dataflow
+   `statusChanged` Eventarc function (batch jobs run ~12 min, past the 540 s
+   event-function limit, so polling in the launch function can't work either).
+6. Cancelling a streaming job discards Pub/Sub messages already acked into
+   Streaming Engine state — use drain, or expect to republish.
+
+**Observed latencies:** batch job wall-clock ~12 min (fixed startup dominates);
+streaming publish→Iceberg commit ~90 s; Snowflake CLD table refresh 1–10 min
+observed despite nominal `REFRESH_INTERVAL_SECONDS=30` — measure before
+promising freshness SLAs. Local gotcha: installing apache-beam downgraded
+protobuf and broke the snow CLI (`runtime_version` ImportError) — Beam is no
+longer needed locally; `pip install protobuf==5.29.6` restores it.
+
 ## Teardown
 
 `sql/99_teardown.sql` in Snowflake, then `./scripts/99_teardown_gcp.sh`.
+Extension: `./scripts/06_run_streaming.sh cancel`, delete the two functions,
+topic/subscription, AR repo (`terraform destroy` once imported, or by hand).
