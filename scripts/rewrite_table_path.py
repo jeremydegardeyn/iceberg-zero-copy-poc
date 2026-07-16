@@ -36,9 +36,16 @@ spark = (
     .getOrCreate()
 )
 
-staging = f"gs://{c}/replica-staging/{args.table.replace('.', '/')}"
+# Staging MUST live inside the table's own location: vended credentials are
+# downscoped to the table prefix, so writes anywhere else in the bucket 403.
+loc = next(
+    r.data_type for r in spark.sql(f"DESCRIBE TABLE EXTENDED {args.table}").collect()
+    if r.col_name == "Location"
+)
+staging = f"{loc}/_replica_staging"
+# Backticks: catalog names with hyphens must be quoted in Spark SQL.
 row = spark.sql(f"""
-  CALL {c}.system.rewrite_table_path(
+  CALL `{c}`.system.rewrite_table_path(
     table => '{args.table}',
     source_prefix => 'gs://{c}',
     target_prefix => 's3://{args.target_bucket}',

@@ -117,6 +117,9 @@ DROP EXTERNAL VOLUME s3_replica_vol;
 | Symptom | Likely cause / fix |
 |---|---|
 | `AccessDenied ... s3:CreateBucket` | IAM user has no policy attached (a fresh user has none — attach before running) |
+| Spark: `missing '(' at '-'` on CALL | Hyphenated catalog names must be backtick-quoted in Spark SQL (script does this) |
+| Spark: 403 writing staging metadata | Vended credentials are downscoped to the TABLE's prefix — staging_location must live inside the table location (script derives it via DESCRIBE TABLE EXTENDED) |
+| `No URLs matched .../file-list` | The copy plan is a Spark output *directory* of part-files, not one object (copier handles both) |
 | External volume verify fails | Trust policy not updated (step 3), or external id mismatch — `CREATE OR REPLACE EXTERNAL VOLUME` mints a NEW external id; redo step 3 after any replace |
 | Snowflake reads fail after refresh | `ALTER ICEBERG TABLE ... REFRESH` not run, or old metadata path |
 | Replica disagrees with zero-copy table | Expected between syncs (staleness by design); rerun step 4 |

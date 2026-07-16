@@ -159,7 +159,15 @@ promising freshness SLAs. Local gotcha: installing apache-beam downgraded
 protobuf and broke the snow CLI (`runtime_version` ImportError) — Beam is no
 longer needed locally; `pip install protobuf==5.29.6` restores it.
 
-## S3 replica increment (ADR-0002 option C) — built, awaiting AWS credentials
+## S3 replica increment (ADR-0002 option C) — EXECUTED 2026-07-16
+
+Proven end-to-end against a personal AWS free-plan account: same `orders`
+table read both ways from Snowflake with identical results (4 rows,
+sum=467.75) — zero-copy from GCS and intra-region from S3. Three as-run
+fixes folded into the scripts: backtick-quote hyphenated catalog names in
+Spark `CALL`; staging_location must live INSIDE the table location (vended
+credentials are table-prefix-scoped); the rewrite copy plan is a Spark output
+directory of part-files.
 
 The sanctioned fallback for hot tables (ADR-0006 break-even) or S3-only
 consumers: a point-in-time physical replica in S3, read intra-region by

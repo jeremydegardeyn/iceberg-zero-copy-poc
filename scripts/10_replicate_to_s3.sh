@@ -21,6 +21,7 @@ OUT=$(gcloud dataproc batches submit pyspark "gs://$BUCKET/jobs/rewrite_table_pa
   -- --catalog "$BUCKET" --project "$PROJECT_ID" --table "$TABLE" --target_bucket "$S3_BUCKET" \
   2>&1 | tee /dev/stderr | grep "REWRITE_RESULT" | tail -1)
 
+[ -n "$OUT" ] || { echo "ERROR: rewrite_table_path emitted no REWRITE_RESULT — check the Dataproc batch logs" >&2; exit 1; }
 LATEST_VERSION=$(echo "$OUT" | sed -E 's/.*latest_version=([^ ]+).*/\1/')
 FILE_LIST=$(echo "$OUT" | sed -E 's/.*file_list=([^ ]+).*/\1/')
 echo "== latest_version: $LATEST_VERSION"

@@ -30,7 +30,12 @@ def main() -> None:
     ap.add_argument("--dry_run", action="store_true")
     args = ap.parse_args()
 
-    rows = list(csv.reader(io.StringIO(gsutil_cat(args.file_list).decode("utf-8"))))
+    # rewrite_table_path writes the plan as a Spark output DIRECTORY of part files.
+    try:
+        raw = gsutil_cat(args.file_list)
+    except RuntimeError:
+        raw = gsutil_cat(f"{args.file_list.rstrip('/')}/part-*.csv")
+    rows = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
     pairs = [(r[0].strip(), r[1].strip()) for r in rows if len(r) >= 2]
     print(f"{len(pairs)} files in copy plan")
 
