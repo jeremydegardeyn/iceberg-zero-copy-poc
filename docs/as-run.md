@@ -1,6 +1,6 @@
 # As-Run Log: 2026-07-14 POC Execution
 
-Exact steps from a successful end-to-end run (a GCP project in `us-central1` → a Snowflake trial on AWS us-east-2, Enterprise edition). Follow top to bottom to reproduce. The generic runbook is `runbook.md`; this file records what actually happened, including the failures and their fixes (now folded back into the scripts/SQL).
+Exact steps from a successful end-to-end run (a GCP project in `us-central1` → a Snowflake trial on AWS us-east-2, Enterprise edition). Follow top to bottom to reproduce. The generic runbook is `runbook-zero-copy.md`; this file records what actually happened, including the failures and their fixes (now folded back into the scripts/SQL).
 
 ## 0. One-time workstation setup (Windows)
 
