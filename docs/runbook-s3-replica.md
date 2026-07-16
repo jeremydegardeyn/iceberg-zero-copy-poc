@@ -88,7 +88,23 @@ UNION ALL
 SELECT 's3_replica', COUNT(*) FROM replica_orders;
 ```
 
-## 6. Refresh cadence
+## 6. Multi-engine: register in Glue, read from Athena/Redshift/EMR
+
+This is the capability the zero-copy path **cannot** offer — Athena and
+Redshift are structurally S3-bound and cannot read `gs://` at all.
+
+```bash
+python scripts/12_glue_athena_register.py --bucket <s3-bucket> \
+  --metadata_path shared_aws/orders/metadata/<version>.metadata.json
+```
+
+Registers the table in a Glue database (`table_type=ICEBERG` +
+`metadata_location`) and queries it from Athena. Verified 2026-07-16: Athena
+returned the same 4 rows Snowflake sees, with no Snowflake involved and no
+GCP call at read time. Redshift Spectrum / EMR / Spark read the same Glue
+entry.
+
+## 7. Refresh cadence
 
 The replica is **stale by design** between syncs. Refresh = rerun step 4, then:
 

@@ -162,8 +162,12 @@ longer needed locally; `pip install protobuf==5.29.6` restores it.
 ## S3 replica increment (ADR-0002 option C) — EXECUTED 2026-07-16
 
 Proven end-to-end against a personal AWS free-plan account: same `orders`
-table read both ways from Snowflake with identical results (4 rows,
-sum=467.75) — zero-copy from GCS and intra-region from S3. Three as-run
+table read THREE ways with identical results (4 rows, sum=467.75) —
+zero-copy from GCS via Snowflake, the S3 replica via Snowflake, and the S3
+replica via **Athena over a Glue catalog** (no Snowflake, no GCP call at read
+time). The Athena leg proves the multi-engine argument for replication:
+Athena and Redshift cannot read `gs://` at all, so zero-copy federation is
+Snowflake-only among common AWS consumers. Three as-run
 fixes folded into the scripts: backtick-quote hyphenated catalog names in
 Spark `CALL`; staging_location must live INSIDE the table location (vended
 credentials are table-prefix-scoped); the rewrite copy plan is a Spark output
