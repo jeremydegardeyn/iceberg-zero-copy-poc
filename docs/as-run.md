@@ -159,6 +159,30 @@ promising freshness SLAs. Local gotcha: installing apache-beam downgraded
 protobuf and broke the snow CLI (`runtime_version` ImportError) — Beam is no
 longer needed locally; `pip install protobuf==5.29.6` restores it.
 
+## S3 replica increment (ADR-0002 option C) — built, awaiting AWS credentials
+
+The sanctioned fallback for hot tables (ADR-0006 break-even) or S3-only
+consumers: a point-in-time physical replica in S3, read intra-region by
+Snowflake with zero per-query egress. Requires the user's own AWS account.
+
+```bash
+# one-time, needs AWS creds (env vars or ~/.aws/credentials) with S3+IAM rights:
+python scripts/11_aws_replica_setup.py create --bucket <s3-bucket>   # bucket us-east-2 + role
+# Snowflake: sql/04_s3_replica.sql steps 1-2 (external volume; DESC gives ARN+external id)
+python scripts/11_aws_replica_setup.py trust --bucket <b> --iam_user_arn <arn> --external_id <id>
+
+# per refresh:
+./scripts/10_replicate_to_s3.sh <s3-bucket> shared_aws.orders   # rewrite_table_path + copy plan
+# Snowflake: sql/04_s3_replica.sql steps 3-5 (object-store integration, ICEBERG TABLE, compare)
+```
+
+Key mechanics: Iceberg metadata stores absolute paths, so the replica needs
+`rewrite_table_path` (stages s3://-prefixed metadata + emits a copy plan);
+data files copy unchanged. The replica is stale by design between syncs —
+refresh = re-run 10 + `ALTER ICEBERG TABLE ... REFRESH '<new metadata path>'`.
+Bucket lives in us-east-2 (same region as the Snowflake account), so replica
+reads are intra-region: the cross-cloud cost is paid once at sync, not per query.
+
 ## Teardown
 
 `sql/99_teardown.sql` in Snowflake, then `./scripts/99_teardown_gcp.sh`.
