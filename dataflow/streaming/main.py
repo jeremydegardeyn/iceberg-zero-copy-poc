@@ -24,8 +24,10 @@ import typing
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.transforms import window
 
 CATALOG_URI = "https://biglake.googleapis.com/iceberg/v1/restcatalog"
+AWS_SECRET = "aws-replica-creds"
 
 
 class Event(typing.NamedTuple):
@@ -87,32 +89,106 @@ def iceberg_write_config(
     return cfg
 
 
+class WriteWindowToS3(beam.DoFn):
+    """One S3 object per window, written with boto3 directly.
+
+    Deliberately NOT beam.io.fileio.WriteToFiles: from Dataflow that path hit
+    two separate defects — it stages temp files in the pipeline temp_location
+    (GCS) and finalises them with the GCS filesystem, which rejects an s3://
+    target; and with temp_directory forced onto S3 it then died with
+    `AttributeError: 'str' object has no attribute 'get'` inside the sink.
+    Beam's S3 filesystem is not a well-trodden path from Dataflow. A plain
+    put_object per window is explicit, debuggable, and entirely adequate for a
+    landing zone — the window IS the batch boundary.
+    """
+
+    def __init__(self, bucket, prefix, region, key_id, secret):
+        self.bucket, self.prefix, self.region = bucket, prefix, region
+        self.key_id, self.secret = key_id, secret
+
+    def setup(self):
+        import boto3
+
+        self.s3 = boto3.client(
+            "s3", region_name=self.region,
+            aws_access_key_id=self.key_id, aws_secret_access_key=self.secret,
+        )
+
+    def process(self, batch, window=beam.DoFn.WindowParam):
+        import uuid
+
+        rows = list(batch)
+        if not rows:
+            return
+        key = f"{self.prefix}/w{int(window.start)}-{uuid.uuid4().hex[:8]}.json"
+        body = "\n".join(json.dumps(e._asdict()) for e in rows)
+        self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode())
+        yield f"s3://{self.bucket}/{key} ({len(rows)} rows)"
+
+
+def aws_creds(project_id: str) -> dict:
+    """AWS key from Secret Manager — never a flex-template parameter. See ADR-0007.
+
+    Note this key works for Beam's S3 *filesystem* (plain static credentials)
+    but NOT for an Iceberg Glue catalog client, which demands a provider class.
+    That asymmetry is the whole reason the landing-zone split exists.
+    """
+    from google.cloud import secretmanager
+
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{AWS_SECRET}/versions/latest"
+    return json.loads(client.access_secret_version(name=name).payload.data.decode())
+
+
 def run() -> None:
     # allow_abbrev=False: otherwise argparse eats Beam's --project as an
     # abbreviation of --project_id and the launcher fails pipeline validation.
     ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--project_id", required=True)
-    ap.add_argument("--catalog", required=True, help="bucket name = catalog name")
+    ap.add_argument("--catalog", required=True, help="GCS bucket, or S3 bucket for s3_landing")
     ap.add_argument("--subscription", required=True, help="full subscription path")
     ap.add_argument("--table", default="shared_aws.events")
     ap.add_argument("--commit_seconds", type=int, default=30)
     ap.add_argument("--auth", choices=["google", "static"], default="google")
+    ap.add_argument("--sink", choices=["iceberg", "s3_landing"], default="iceberg")
+    ap.add_argument("--aws_region", default="us-east-2")
+    ap.add_argument("--landing_prefix", default="landing/stream")
+    ap.add_argument("--window_seconds", type=int, default=60)
     args, beam_args = ap.parse_known_args()
+
+    c = aws_creds(args.project_id) if args.sink == "s3_landing" else None
 
     opts = PipelineOptions(beam_args, streaming=True, save_main_session=True)
     with beam.Pipeline(options=opts) as p:
-        (
+        rows = (
             p
             | "ReadPubSub" >> beam.io.ReadFromPubSub(subscription=args.subscription)
             | "Parse" >> beam.Map(parse_event).with_output_types(Event)
-            | "WriteIceberg"
-            >> beam.managed.Write(
+        )
+        if args.sink == "s3_landing":
+            # Unbounded -> objects requires windowing; each window flushes one
+            # object. Window size IS the freshness floor for this path.
+            (
+                rows
+                | "Window" >> beam.WindowInto(window.FixedWindows(args.window_seconds))
+                | "OneShard" >> beam.Map(lambda e: (None, e))
+                | "GroupWindow" >> beam.GroupByKey()
+                | "Batch" >> beam.Map(lambda kv: kv[1])
+                | "WriteS3"
+                >> beam.ParDo(
+                    WriteWindowToS3(
+                        args.catalog, args.landing_prefix, args.aws_region,
+                        c["access_key_id"], c["secret_access_key"],
+                    )
+                )
+            )
+        else:
+            rows | "WriteIceberg" >> beam.managed.Write(
                 beam.managed.ICEBERG,
                 config=iceberg_write_config(
                     args.table, args.catalog, args.project_id, args.commit_seconds, args.auth
                 ),
             )
-        )
 
 
 if __name__ == "__main__":

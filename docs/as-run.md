@@ -195,6 +195,45 @@ refresh = re-run 10 + `ALTER ICEBERG TABLE ... REFRESH '<new metadata path>'`.
 Bucket lives in us-east-2 (same region as the Snowflake account), so replica
 reads are intra-region: the cross-cloud cost is paid once at sync, not per query.
 
+## Landing-zone pattern (ADR-0007) — EXECUTED 2026-07-17
+
+Full end-to-end: Pub/Sub → Dataflow (windowed boto3 writer) → S3 landing zone
+→ AWS Glue Spark job → Iceberg table registered in Glue → Athena. Reconciled
+exactly: 10 dataflow-streamed events (sum 100.00) + 15 seeded rows (sum
+871.24) = 25 rows in `stream_events`.
+
+**Measured:** publish → bytes landed in S3 = **68 s** (60 s window + flush).
+Glue promotion job = **77–81 s** per run. Publish → queryable-as-Iceberg ≈
+window + promotion cadence (~2.5–4 min if event-driven/scheduled tightly).
+
+```bash
+# GCP side: streaming template with sink=s3_landing (see 06_run_streaming.sh
+# params); AWS side:
+python scripts/14_glue_job.py setup --bucket <s3-bucket>   # role, script, job def
+python scripts/14_glue_job.py run   --bucket <s3-bucket>   # landing -> Iceberg
+```
+
+**Why this pattern exists:** Dataflow CANNOT write Iceberg into Glue directly —
+Iceberg's Glue client demands a reflectively-constructed credentials provider
+(`StaticCredentialsProvider` has no `create()`/`create(Map)`), so static keys
+fail at the catalog layer while working fine for plain S3 object writes. The
+split puts every catalog operation on AWS-native compute (the Glue job carries
+ZERO credentials — pure IAM role) and leaves GCP compute moving bytes only.
+
+**Sharp edges hit (fixed in repo):**
+1. Beam's `fileio.WriteToFiles` to s3:// is broken from Dataflow twice over:
+   temp files stage to the GCS temp_location and finalize with the GCS
+   filesystem (rejects s3://); with temp forced to S3 it dies with
+   `AttributeError: 'str' object has no attribute 'get'`. Fix: plain boto3
+   `put_object` per window in a DoFn.
+2. Worker Python deps are NOT the launcher image's: boto3 in the Dockerfile
+   `pip install` reaches only the launcher; workers need
+   `FLEX_TEMPLATE_PYTHON_REQUIREMENTS_FILE` (keep it minimal, no apache-beam).
+3. Beam retry loops log at WARNING, not ERROR — a "healthy" monitor grepping
+   ERROR misses them. Watch data arrival, not job state.
+4. (Repeat offender) cancelling a streaming job discards acked messages — the
+   replacement job sat idle on an empty subscription. Drain, or republish.
+
 ## Teardown
 
 `sql/99_teardown.sql` in Snowflake, then `./scripts/99_teardown_gcp.sh`.

@@ -1,12 +1,16 @@
-"""Batch flex template: CSV in GCS -> Iceberg, in EITHER catalog.
+"""Batch flex template: CSV in GCS -> one of three sinks.
 
-  --catalog_type biglake  (default)  -> Iceberg on GCS, BigLake REST catalog
-  --catalog_type glue                -> Iceberg on S3, AWS Glue catalog
+  --sink iceberg --catalog_type biglake  -> Iceberg on GCS, BigLake REST catalog
+  --sink iceberg --catalog_type glue     -> Iceberg on S3, Glue catalog
+                                            (BLOCKED: Iceberg cannot take static
+                                             creds for the Glue client — ADR-0007)
+  --sink s3_landing                      -> Parquet into an S3 landing zone
 
-The point of the second mode: if the consumers are on AWS, writing straight to
-S3+Glue deletes the entire replica path (no rewrite_table_path, no copy plan,
-no scheduler, no staleness) for the same egress volume and half the storage.
-Same pipeline, same code — the catalog is configuration. See ADR-0007.
+`s3_landing` is the Huntington-style split: GCP compute moves *bytes* to S3
+(a plain filesystem write, which Beam's S3 support handles with static keys),
+and AWS-native compute (Athena CTAS / a Glue job) turns the landing zone into
+Iceberg using an IAM role. The writer runs where the storage is, so the
+cross-cloud credential problem never arises. See ADR-0007.
 
 Triggered by the scs-raw file-drop function (trigger/main.py) or run manually.
 CSV format (header required): event_id,source,amount,published_at
@@ -22,6 +26,7 @@ import json
 import typing
 
 import apache_beam as beam
+import pyarrow
 from apache_beam.options.pipeline_options import PipelineOptions
 
 CATALOG_URI = "https://biglake.googleapis.com/iceberg/v1/restcatalog"
@@ -106,26 +111,58 @@ def run() -> None:
     ap.add_argument("--project_id", required=True)
     ap.add_argument("--catalog", required=True, help="GCS bucket, or S3 bucket for glue")
     ap.add_argument("--catalog_type", choices=["biglake", "glue"], default="biglake")
+    ap.add_argument("--sink", choices=["iceberg", "s3_landing"], default="iceberg")
     ap.add_argument("--aws_region", default="us-east-2")
     ap.add_argument("--table", default="shared_aws.batch_events")
+    ap.add_argument("--landing_prefix", default="landing/events")
     args, beam_args = ap.parse_known_args()
 
-    write_config = {
-        "table": args.table,
-        "catalog_name": args.catalog.replace("-", "_"),
-        "catalog_properties": catalog_properties(
-            args.catalog_type, args.catalog, args.project_id, args.aws_region
-        ),
-    }
+    extra = {}
+    if args.sink == "s3_landing":
+        # Beam's S3 filesystem takes static keys directly — no provider-class
+        # reflection, which is exactly what blocks the Glue catalog client.
+        # Injected here from Secret Manager, never as a template parameter.
+        c = aws_creds(args.project_id)
+        extra = {
+            "s3_access_key_id": c["access_key_id"],
+            "s3_secret_access_key": c["secret_access_key"],
+            "s3_region_name": args.aws_region,
+        }
 
-    opts = PipelineOptions(beam_args, save_main_session=True)
+    opts = PipelineOptions(beam_args, save_main_session=True, **extra)
     with beam.Pipeline(options=opts) as p:
-        (
+        rows = (
             p
             | "ReadCSV" >> beam.io.ReadFromText(args.input, skip_header_lines=1)
             | "Parse" >> beam.Map(parse_csv_line).with_output_types(Event)
-            | "WriteIceberg" >> beam.managed.Write(beam.managed.ICEBERG, config=write_config)
         )
+        if args.sink == "s3_landing":
+            (
+                rows
+                | "ToDict" >> beam.Map(lambda e: e._asdict())
+                | "WriteParquet"
+                >> beam.io.WriteToParquet(
+                    f"s3://{args.catalog}/{args.landing_prefix}",
+                    pyarrow.schema([
+                        ("event_id", pyarrow.int64()),
+                        ("source", pyarrow.string()),
+                        ("amount", pyarrow.float64()),
+                        ("published_at", pyarrow.string()),
+                    ]),
+                    file_name_suffix=".parquet",
+                )
+            )
+        else:
+            write_config = {
+                "table": args.table,
+                "catalog_name": args.catalog.replace("-", "_"),
+                "catalog_properties": catalog_properties(
+                    args.catalog_type, args.catalog, args.project_id, args.aws_region
+                ),
+            }
+            rows | "WriteIceberg" >> beam.managed.Write(
+                beam.managed.ICEBERG, config=write_config
+            )
 
 
 if __name__ == "__main__":

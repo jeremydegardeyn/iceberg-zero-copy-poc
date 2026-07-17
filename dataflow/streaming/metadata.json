@@ -28,6 +28,36 @@
       "label": "Commit interval seconds",
       "helpText": "Iceberg snapshot commit cadence; drives consumer freshness.",
       "isOptional": true
+    },
+    {
+      "name": "auth",
+      "label": "BigLake auth mode",
+      "helpText": "google (auto-refreshing ADC, default) or static (1h token, Google's documented sample).",
+      "isOptional": true
+    },
+    {
+      "name": "sink",
+      "label": "Sink",
+      "helpText": "iceberg (default) or s3_landing (windowed JSON into an S3 landing zone, ADR-0007).",
+      "isOptional": true
+    },
+    {
+      "name": "aws_region",
+      "label": "AWS region",
+      "helpText": "Only used when sink=s3_landing.",
+      "isOptional": true
+    },
+    {
+      "name": "landing_prefix",
+      "label": "S3 landing prefix",
+      "helpText": "Key prefix for landing-zone files. Only used when sink=s3_landing.",
+      "isOptional": true
+    },
+    {
+      "name": "window_seconds",
+      "label": "Window seconds",
+      "helpText": "Fixed window size; each window flushes one object. This IS the freshness floor for sink=s3_landing.",
+      "isOptional": true
     }
   ]
 }

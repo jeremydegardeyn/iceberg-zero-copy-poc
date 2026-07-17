@@ -1,0 +1,5 @@
+# Installed on the WORKERS (staged via FLEX_TEMPLATE_PYTHON_REQUIREMENTS_FILE).
+# Deliberately minimal and WITHOUT apache-beam: the SDK harness already has
+# Beam, and reinstalling it here causes version conflicts. Only list what a
+# Python DoFn imports at runtime.
+boto3

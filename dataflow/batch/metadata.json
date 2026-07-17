@@ -32,7 +32,19 @@
     {
       "name": "aws_region",
       "label": "AWS region",
-      "helpText": "Region for the Glue catalog and S3 bucket. Only used when catalog_type=glue.",
+      "helpText": "Region for the Glue catalog and S3 bucket. Used when catalog_type=glue or sink=s3_landing.",
+      "isOptional": true
+    },
+    {
+      "name": "sink",
+      "label": "Sink",
+      "helpText": "iceberg (default) or s3_landing (Parquet into an S3 landing zone, ADR-0007).",
+      "isOptional": true
+    },
+    {
+      "name": "landing_prefix",
+      "label": "S3 landing prefix",
+      "helpText": "Key prefix for landing-zone Parquet. Only used when sink=s3_landing.",
       "isOptional": true
     }
   ]
