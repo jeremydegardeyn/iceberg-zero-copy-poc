@@ -77,6 +77,38 @@ So the *decision* below stands on its cost and consumer-reach arguments, but
 the "it's just a parameter" claim is **not yet true for Dataflow→Glue**;
 budget for path 1 or 2 before relying on it.
 
+### Superseding result 2026-07-17 — Dataproc Spark direct-write CONFIRMED
+
+Retested on Dataproc Serverless (Spark) instead of Dataflow, changing exactly
+two things:
+
+1. **Don't configure `client.credentials-provider` at all.** Iceberg's AWS
+   module defaults to `DefaultCredentialsProvider`, which — unlike
+   `StaticCredentialsProvider` — has the no-arg `create()` method the
+   reflective instantiation needs. Supply the actual key/secret as JVM
+   **system properties** (`-Daws.accessKeyId=…` via
+   `spark.driver.extraJavaOptions` / `spark.executor.extraJavaOptions`), which
+   `SystemPropertyCredentialsProvider` reads — first in the same default
+   chain. (`spark.driverEnv`/`spark.executorEnv` were tried first and do
+   **not** propagate on Dataproc Serverless; system properties do.)
+2. **Cloud NAT on the VPC.** Once credentials resolved, the job still failed
+   with `SocketTimeoutException: Connect timed out` — the earlier BigLake
+   jobs never left Google's network (Private Google Access), but AWS is the
+   public internet, and Dataproc Serverless has no route out without a NAT
+   gateway.
+
+With both fixed, `glue_direct_test.direct_test.probe` was created, written,
+committed, and read back through `GlueCatalog` — zero landing zone, zero Glue
+promotion job.
+
+**Consequence for this ADR:** the credential-plumbing gap is closed for
+**Spark-based pipelines** (Dataproc, EMR). The landing-zone split (path 3,
+"Tested 2026-07-16" above) remains the answer specifically for **Dataflow/
+Beam**, where the managed Iceberg sink's cross-language expansion-service JVM
+has not been confirmed to accept the same system-property injection — that
+is the next open test, not yet run. Until confirmed, treat Dataflow→Glue as
+still blocked and Dataproc/Spark→Glue as proven.
+
 **Replication (ADR-0002 option C) is retained strictly as a retrofit**, for:
 
 - data that is *already* in GCS (backfills, existing estates, migrations),

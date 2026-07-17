@@ -77,3 +77,10 @@ variable "wif_provider_id" {
   type    = string
   default = "snowflake-provider"
 }
+
+# Standing hourly cost while true — only needed for the Spark-direct-to-S3+Glue
+# path (ADR-0007). Off by default.
+variable "enable_dataproc_nat" {
+  type    = bool
+  default = false
+}
