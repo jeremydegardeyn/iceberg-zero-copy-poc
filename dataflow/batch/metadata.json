@@ -22,6 +22,18 @@
       "label": "Destination Iceberg table",
       "helpText": "namespace.table (auto-created on first commit).",
       "isOptional": true
+    },
+    {
+      "name": "catalog_type",
+      "label": "Catalog type",
+      "helpText": "biglake (Iceberg on GCS, default) or glue (Iceberg on S3 — direct-write, ADR-0007).",
+      "isOptional": true
+    },
+    {
+      "name": "aws_region",
+      "label": "AWS region",
+      "helpText": "Region for the Glue catalog and S3 bucket. Only used when catalog_type=glue.",
+      "isOptional": true
     }
   ]
 }

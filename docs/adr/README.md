@@ -10,3 +10,4 @@ Format: lightweight MADR. Status lifecycle: Proposed → Accepted → Superseded
 | [0004](0004-keyless-auth-wif-and-vending.md) | Keyless auth: workload identity federation + credential vending | Accepted |
 | [0005](0005-single-writer-read-only-consumers.md) | Single-writer on GCP; read-only consumers | Accepted |
 | [0006](0006-accept-per-query-egress.md) | Accept per-query egress with a measured break-even review | Accepted |
+| [0007](0007-direct-write-over-replication.md) | Direct-write to the consumer cloud; replicate only as a retrofit | Accepted |
