@@ -23,6 +23,7 @@ performs the move.
 """
 import argparse
 import json
+import os
 import typing
 
 import apache_beam as beam
@@ -89,17 +90,23 @@ def catalog_properties(catalog_type: str, catalog: str, project_id: str, region:
             "rest-metrics-reporting-enabled": "false",
         }
     c = aws_creds(project_id)
+    # Confirmed on Dataproc/Spark (ADR-0007, 2026-07-17): StaticCredentialsProvider
+    # fails reflection (no create()/create(Map) method). Fix is to NOT set
+    # client.credentials-provider at all -- Iceberg's AWS module then defaults to
+    # DefaultCredentialsProvider, which reads real values from the process
+    # environment. Setting them here as os.environ so whatever JVM ends up
+    # executing the write (worker / cross-language expansion) inherits them --
+    # UNTESTED for Dataflow's cross-language execution path; that's the point
+    # of this run.
+    os.environ["AWS_ACCESS_KEY_ID"] = c["access_key_id"]
+    os.environ["AWS_SECRET_ACCESS_KEY"] = c["secret_access_key"]
+    os.environ["aws.accessKeyId"] = c["access_key_id"]
+    os.environ["aws.secretAccessKey"] = c["secret_access_key"]
     return {
         "type": "glue",
         "warehouse": f"s3://{catalog}/direct",
         "io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
         "client.region": region,
-        "s3.access-key-id": c["access_key_id"],
-        "s3.secret-access-key": c["secret_access_key"],
-        "client.credentials-provider":
-            "software.amazon.awssdk.auth.credentials.StaticCredentialsProvider",
-        "client.credentials-provider.aws.accessKeyId": c["access_key_id"],
-        "client.credentials-provider.aws.secretAccessKey": c["secret_access_key"],
     }
 
 

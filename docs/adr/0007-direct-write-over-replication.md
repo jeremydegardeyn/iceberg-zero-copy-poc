@@ -102,12 +102,29 @@ committed, and read back through `GlueCatalog` — zero landing zone, zero Glue
 promotion job.
 
 **Consequence for this ADR:** the credential-plumbing gap is closed for
-**Spark-based pipelines** (Dataproc, EMR). The landing-zone split (path 3,
-"Tested 2026-07-16" above) remains the answer specifically for **Dataflow/
-Beam**, where the managed Iceberg sink's cross-language expansion-service JVM
-has not been confirmed to accept the same system-property injection — that
-is the next open test, not yet run. Until confirmed, treat Dataflow→Glue as
-still blocked and Dataproc/Spark→Glue as proven.
+**Spark-based pipelines** (Dataproc, EMR). Dataflow was retested with the
+identical fix (drop the credential-provider class, set real values via
+`os.environ` so whatever process executes the write inherits them) — the
+credential error is gone, but a **new and different** failure appears:
+
+```
+Caused by: java.lang.NoSuchFieldError: AUTH_SCHEME_PROVIDER
+```
+
+This is not a configuration problem. It is a **classpath/dependency version
+conflict** inside Beam's bundled AWS SDK jars for the managed Iceberg
+cross-language transform — code compiled against one AWS SDK v2 version
+running against a different, incompatible version actually on the runtime
+classpath. It cannot be fixed from pipeline options or catalog properties;
+it would require rebuilding Beam's dependency set (jar shading/exclusions),
+which is out of scope for a flex-template Docker image.
+
+**Final status: Dataflow→S3+Glue direct-write is confirmed blocked**, for a
+different and harder reason than originally found (dependency conflict, not
+credentials). The landing-zone split (path 3, "Tested 2026-07-16" above)
+remains the correct answer for Dataflow/Beam pipelines whose consumers need
+Glue-registered tables. Dataproc/Spark pipelines should use direct-write
+(this section); Dataflow/Beam pipelines should use the landing zone.
 
 **Replication (ADR-0002 option C) is retained strictly as a retrofit**, for:
 
