@@ -7,3 +7,7 @@ terraform/.build/
 *.tfstate*
 .terraform/
 ~$*
+
+# Decks kept out of the public repo (may contain branded/internal assets)
+*.pptx
+*.ppt
