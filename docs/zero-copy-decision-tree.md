@@ -121,6 +121,26 @@ It is a **poor fit — copy or write to S3 instead** when *any* of these hold:
 
 ---
 
-*Companion to [spec.md](spec.md), the [ADRs](adr/README.md), and the two
+---
+
+## The mirror problem — reading S3 from GCP
+
+This tree is written for the GCS-lake -> AWS-consumer direction. The reverse —
+an **S3-resident Iceberg lake read from a GCP consumer** — is also proven, and
+it behaves differently in a way worth knowing:
+
+- **BigQuery Omni** runs BigQuery compute *inside AWS*, next to the S3 data, and
+  returns only results to GCP. Because compute moves to the data rather than
+  the data to the compute, there is **no per-scan bulk egress** — the opposite
+  of the forward direction's cost profile.
+- Same consumer-reach caveat, mirrored: BigQuery (via Omni) and Dataproc/Spark
+  (with an S3 connector) can read S3 from GCP; it is not universal.
+- Constraint: the S3 data must sit in an Omni-supported AWS region.
+
+See [runbook-omni-reverse.md](runbook-omni-reverse.md) for the tested build.
+
+---
+
+*Companion to [spec.md](spec.md), the [ADRs](adr/README.md), and the
 runbooks. Measured figures throughout are from the POC and should be
 re-validated at production scale.*

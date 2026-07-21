@@ -10,6 +10,10 @@ Two consumption paths, one producer-side catalog:
 Not sure which path a given table belongs on? Start with the
 [decision tree](zero-copy-decision-tree.md).
 
+The **reverse direction** — reading an S3-resident Iceberg lake from GCP
+(BigQuery Omni) — is documented in
+[runbook-omni-reverse.md](runbook-omni-reverse.md).
+
 The streaming/batch ingestion extension and the integrity-control harness are
 documented in [as-run.md](as-run.md). Production-readiness argument:
 [production-readiness.md](production-readiness.md).

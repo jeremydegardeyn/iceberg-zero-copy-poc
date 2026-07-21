@@ -234,8 +234,22 @@ ZERO credentials — pure IAM role) and leaves GCP compute moving bytes only.
 4. (Repeat offender) cancelling a streaming job discards acked messages — the
    replacement job sat idle on an empty subscription. Drain, or republish.
 
+## Reverse direction (BigQuery Omni) — EXECUTED 2026-07-20
+
+Proven: BigQuery read an S3-resident Iceberg table cross-cloud via Omni — same
+4 rows / 467.75 aggregate, with compute running in AWS us-east-1 and only the
+result returning to GCP (no bulk egress). Iceberg table written to a fresh
+us-east-1 bucket with PyIceberg (no Spark/NAT); BQ Omni AWS connection with a
+web-identity IAM role; external Iceberg table over the metadata.json; SELECT
+from BigQuery. Full runbook: docs/runbook-omni-reverse.md. As-run fixes: `bq mk`
+wants `--iam_role_id` not `--properties` JSON; the role's MaxSessionDuration
+must be 12h (43200s); our other data was in us-east-2 which Omni does not cover;
+local numpy/pandas ABI mismatch needed `pandas>=2.2`.
+
 ## Teardown
 
 `sql/99_teardown.sql` in Snowflake, then `./scripts/99_teardown_gcp.sh`.
 Extension: `./scripts/06_run_streaming.sh cancel`, delete the two functions,
 topic/subscription, AR repo (`terraform destroy` once imported, or by hand).
+Reverse leg: drop the BQ external table/dataset/connection, delete the AWS
+role and the us-east-1 bucket.
