@@ -104,6 +104,11 @@ Querying it returns the real rows from S3, read in place:
 
 ![Query results: 4 rows read from S3-resident Iceberg](img/omni-2-query-results.png)
 
+The execution details are the proof that compute ran **in AWS** and almost
+nothing crossed the boundary — **151 B shuffled**, 787 ms elapsed, 0 B spilled:
+
+![BigQuery execution details: 151 B shuffled, 787 ms](img/omni-8-execution-details.png)
+
 ## Sharp edges (hit during the build)
 
 | Symptom | Fix |
@@ -137,6 +142,21 @@ identity**, not a secret.
    data/metadata; only results return to GCP.
 
 Nothing to rotate, nothing to leak — credentials expire in hours.
+
+The trust policy on the AWS role — a federated Google principal, the
+`AssumeRoleWithWebIdentity` action, and the `sub` pinned to the connection's
+identity (redacted):
+
+![AWS IAM role trust policy: accounts.google.com + AssumeRoleWithWebIdentity + sub](img/omni-5-iam-trust.png)
+
+The role's summary shows the required **12-hour** max session duration (account
+id redacted):
+
+![AWS IAM role summary: maximum session duration 12 hours](img/omni-6-iam-session.png)
+
+Least privilege on the S3 side — read-only, scoped to the one bucket:
+
+![AWS IAM role s3-read policy: GetObject/ListBucket on the bucket](img/omni-7-iam-s3-policy.png)
 
 ## Downstream consumers — the one that changes the design
 
