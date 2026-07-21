@@ -113,6 +113,31 @@ Querying it returns the real rows from S3, read in place:
 | Data is in `us-east-2` | Not an Omni region — move/write it to `us-east-1` (or another supported region). |
 | `pa.table(...)` ValueError: "numpy.dtype size changed" | Local numpy/pandas ABI mismatch — `pip install -U 'pandas>=2.2'` to match numpy 2.x. |
 
+## How the auth works — keyless web-identity federation
+
+No static AWS key is ever stored in GCP. The AWS role trusts a **Google
+identity**, not a secret.
+
+**One-time handshake (setup)**
+
+1. `bq mk --connection` mints a Google identity — a numeric OIDC subject — for
+   the connection.
+2. You add that subject to the IAM role's trust policy (`accounts.google.com:sub`
+   condition) and attach the read-only S3 policy.
+3. Raise the role's max session duration to 12h (`43200s`) — Omni requires it.
+
+**Every query (runtime)**
+
+4. Omni requests an OIDC token from `accounts.google.com` for its identity.
+5. Omni calls AWS STS `AssumeRoleWithWebIdentity`, presenting the token — no
+   access key involved.
+6. STS validates the trust (issuer + `sub`) and returns short-lived AWS
+   credentials (≤ 12h).
+7. Omni compute (in the AWS region) uses them to read the S3 Iceberg
+   data/metadata; only results return to GCP.
+
+Nothing to rotate, nothing to leak — credentials expire in hours.
+
 ## Downstream consumers — the one that changes the design
 
 The intended consumers here are **Cloud Run, Compute Engine (Python), Dataflow,
