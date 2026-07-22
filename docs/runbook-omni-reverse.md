@@ -339,6 +339,42 @@ see [ADR-R006](adr-omni-reverse/R006-direct-s3-incremental-cdc.md). Run it from 
 Cloud Run job, a scheduled container, or Dataflow with an S3 connector; give it
 a least-privilege S3 read role and a durable watermark.
 
+## Joining Omni data with native BigQuery (cross-cloud join)
+
+To `JOIN` the Omni table (in `aws-us-east-1`) with a **native** BigQuery table,
+the native dataset must sit in the BigQuery region **colocated** with the Omni
+region — **`us-east4`** for `aws-us-east-1` (**not** `us-east1`). The cross-cloud
+join runs in that colocated GCP region: BigQuery executes the Omni side in AWS,
+transfers the (smaller) result to `us-east4`, and completes the join there.
+
+> A native dataset in the wrong region fails with:
+> **"BigQuery Omni region aws-us-east-1 does not support exporting to us-east1."**
+> The fix is the region, not permissions.
+
+| BigQuery Omni region | Colocated BigQuery region |
+|---|---|
+| `aws-us-east-1` | `us-east4` |
+| others | see the BigQuery Omni **locations** doc — don't guess |
+
+Recipe (full SQL in [`sql/omni_cross_cloud_join.sql`](../sql/omni_cross_cloud_join.sql)):
+
+```sql
+-- dataset + table MUST be in us-east4:
+--   bq mk --location=us-east4 --dataset <project>:omni_join_ref
+CREATE OR REPLACE TABLE omni_join_ref.customer_dim AS
+SELECT 'acme' AS customer, 'enterprise' AS segment, 'NA' AS region UNION ALL ... ;
+
+-- cross-cloud join, run in us-east4:
+SELECT o.order_id, o.customer, o.amount, d.segment, d.region
+FROM   omni_s3.orders o
+JOIN   omni_join_ref.customer_dim d USING (customer);
+```
+
+**Proven 2026-07-21.** Created `omni_join_ref` in `us-east4` + a `customer_dim`,
+and the cross-cloud join returned all 4 joined rows (order_id 1-4 with
+segment/region), 90 bytes processed. Note the join transfers the Omni side to
+`us-east4` — a **cross-cloud transfer** cost applies, separate from bytes billed.
+
 ## Zero-copy (Omni) vs physical copy (into GCS)
 
 | | **Omni read-in-place** | **Physical copy → GCS** (Storage Transfer) |
@@ -393,6 +429,10 @@ Directional; confirm against current BigQuery pricing for your region.
   `us-west-2`, `eu-west-1`, `eu-central-1`, `ap-northeast-2`, `ap-southeast-2`).
   Our other data in `us-east-2` was simply unreachable — the region gates the
   whole approach, so check it *first*.
+- **Cross-cloud join colocation.** To join an Omni table with a native BigQuery
+  table, the native dataset must be in the **colocated** region —
+  `aws-us-east-1` -> **`us-east4`**, not `us-east1`. Wrong region fails with
+  "…does not support exporting to us-east1." (See the cross-cloud join section.)
 - **Storage Read API is unsupported on Omni tables** — the single biggest
   surprise for downstream design. Anything that reads BigQuery at high throughput
   (Dataflow, the Spark-BigQuery connector) needs a materialized native table or a
