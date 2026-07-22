@@ -210,10 +210,33 @@ against current docs — the list evolves), these do **not** work in Omni region
   external tables.
 - **Querying destination temporary tables** with `SELECT`.
 - **Result-size limits:** results > 256 MB with `ORDER BY` fail; results > 20 GiB
-  must be exported to S3 rather than returned.
+  can't be returned to GCP and must be **exported to S3** (see below).
 
 Scheduled queries work only via the API/CLI with `EXPORT DATA`. Not every
 BigQuery feature is covered here — confirm the specific ones your workload needs.
+
+### The ">20 GiB" rule — exporting large results
+
+This is about the query **result set**, not the table. When an Omni query's
+result is too large to stream back to GCP, you export it. **The export is issued
+from BigQuery (Omni), not a separate AWS-side job** — it runs inside Omni (in
+AWS) and writes to **S3** (destination must be S3/Azure Blob, *not* GCS):
+
+```sql
+EXPORT DATA WITH CONNECTION `aws-us-east-1.omni_s3_conn`
+  OPTIONS (uri = 's3://<bucket>/exports/orders/*', format = 'PARQUET')
+AS SELECT * FROM omni_s3.orders WHERE <predicate>;
+```
+
+Two things to know:
+
+- **Write permission.** The connection's IAM role must be able to **write** to
+  S3 (`s3:PutObject`). Our least-privilege role (`scripts/omni_aws_role.py`) is
+  read-only — for exports, add a `PutObject` statement on the export prefix, or
+  use a separate write-capable connection.
+- **It lands in S3, not GCP.** To consume the results in GCP you then read them
+  back (Athena, the CDC reader, another Omni query) or cross-cloud transfer them.
+  So a large-result workflow is: `EXPORT DATA` → S3 → consume/transfer.
 
 ## Downstream consumers — the one that changes the design
 
