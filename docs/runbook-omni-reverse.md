@@ -372,8 +372,23 @@ JOIN   omni_join_ref.customer_dim d USING (customer);
 
 **Proven 2026-07-21.** Created `omni_join_ref` in `us-east4` + a `customer_dim`,
 and the cross-cloud join returned all 4 joined rows (order_id 1-4 with
-segment/region), 90 bytes processed. Note the join transfers the Omni side to
-`us-east4` — a **cross-cloud transfer** cost applies, separate from bytes billed.
+segment/region). Note the join transfers the Omni side to `us-east4` — a
+**cross-cloud transfer** cost applies, separate from bytes billed.
+
+The two datasets, side by side — the Omni table in `aws-us-east-1` and the
+native table in its colocated region `us-east4` (project redacted):
+
+![omni_s3 dataset: data location aws-us-east-1](img/omni-10-ds-omni-s3.png)
+![omni_join_ref dataset: data location us-east4](img/omni-11-ds-join-ref.png)
+
+The join and its results:
+
+![Cross-cloud join query and 4 joined rows](img/omni-9-xjoin-query.png)
+
+Execution details — only **308 B shuffled** across the boundary (the join
+key/result), 8 s 213 ms elapsed, 0 B spilled:
+
+![Cross-cloud join execution details](img/omni-12-xjoin-exec.png)
 
 ## Zero-copy (Omni) vs physical copy (into GCS)
 
