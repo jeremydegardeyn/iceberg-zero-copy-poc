@@ -38,7 +38,9 @@ layer that feeds GCP-native systems.
 
 **Poor fit — operational syncing to GCP systems:**
 
-- Feeding Bigtable, AlloyDB, or Dataflow pipelines (no Storage Read API)
+- Feeding Bigtable or Dataflow pipelines (no Storage Read API). AlloyDB is the
+  exception — it *can* read Omni via the `bigquery_fdw`, but at analytics-grade
+  latency, so still front latency-sensitive serving with a local/materialized copy
 - Anything needing streaming, DML, ML, or sub-second latency (read-only,
   analytics-grade)
 - Materializing the full dataset on every run — that is just a copy with extra
@@ -314,14 +316,26 @@ Per consumer:
   table (co-located with the Dataflow job's region), or `EXPORT DATA` — then
   read that. (Or give Dataflow an S3 connector and read the Iceberg files
   directly, skipping Omni.)
-- **Bigtable / AlloyDB.** Neither can read S3 or an Omni table directly. Populate
-  them from a **materialized GCP-side surface** (native BQ table or GCS export)
-  via a pipeline (e.g. Dataflow). The cross-cloud transfer happens once, at
-  materialization.
+- **AlloyDB.** **Can** read Omni directly via the `bigquery_fdw` (Lakehouse
+  Federation) — **verified in this POC**: a foreign table over `omni_s3.orders`
+  (aws-us-east-1) returned all rows, and AlloyDB even joined it to a native
+  BigQuery table inside Postgres. It works in the FDW's **query mode** (the
+  BigQuery Jobs API), which `auto` selects for external tables; **storage mode
+  fails** on Omni with the same Storage Read API error as Dataflow. Two catches:
+  every read is a cross-cloud BigQuery job (**analytics-grade latency, seconds**),
+  so front latency-sensitive serving with a materialized/local copy; and the FDW
+  authenticates as a **per-cluster** service account
+  (`c-<project-number>-<hash>@gcp-sa-alloydb.iam.gserviceaccount.com`, not the
+  project service agent) that needs `bigquery.dataViewer` + `jobUser` +
+  `connectionUser`.
+- **Bigtable.** Cannot read S3 or Omni — it is a key-value store with no
+  federation. Populate it from a **materialized GCP-side surface** (native BQ
+  table or GCS export) via a pipeline (e.g. Dataflow, or the CDC path below).
 
-**Region, in one line:** query-driven clients (Cloud Run, Compute, Notebooks)
-can live in any GCP region. Anything reading via the Storage Read API (Dataflow,
-Spark) must read a **materialized native table** and run **in that table's GCP
+**Region, in one line:** query-driven clients (Cloud Run, Compute, Notebooks,
+AlloyDB via the FDW) can live in any GCP region — they go through the Jobs API.
+Anything reading via the Storage Read API (Dataflow, Spark, AlloyDB in *storage*
+mode) must read a **materialized native table** and run **in that table's GCP
 region** — it can never read the Omni table directly.
 
 **Design consequence.** If your consumers mostly need *aggregates or slices*,

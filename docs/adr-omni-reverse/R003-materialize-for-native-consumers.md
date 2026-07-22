@@ -18,8 +18,15 @@ facts force the design:
    in this POC ([`scripts/omni_storage_read_test.py`](../../scripts/omni_storage_read_test.py)):
    a `create_read_session` on `omni_s3.orders` failed with `InvalidArgument: 400
    ... Read API can be used to read temporary tables only in this region.`
-2. **Bigtable and AlloyDB can't read S3 or Omni at all.** They ingest from a
-   pipeline over a GCP-resident source.
+2. **Bigtable can't read S3 or Omni at all** — a key-value store with no
+   federation; it ingests from a pipeline over a GCP-resident source.
+3. **AlloyDB is the exception: it *can* read Omni** via the `bigquery_fdw`
+   (Lakehouse Federation), **verified** in this POC — a foreign table over
+   `omni_s3.orders` returned rows and joined to a native table. It works in the
+   FDW's query mode (Jobs API), not storage mode (which hits the same Storage
+   Read API wall). But every read is a cross-cloud BigQuery job at
+   analytics-grade latency, so materialization still applies to *latency-sensitive*
+   AlloyDB serving — not as a hard capability limit.
 
 So consumption splits into two shapes: **query → small result** (aggregates,
 slices, lookups — cheap, only the result crosses) versus **materialize → GCP
@@ -46,7 +53,8 @@ directly from the Omni table.**
 
 - Downstream architecture is explicit about where the cross-cloud transfer
   happens (at materialization, once) instead of being surprised by it.
-- Dataflow/Bigtable/AlloyDB never depend on an unsupported read path.
+- Dataflow and Bigtable never depend on an unsupported read path; AlloyDB may
+  read Omni directly via the FDW when analytics-grade latency is acceptable.
 - The "materialize everything every run" anti-pattern is called out as the
   signal to switch to a scheduled copy, keeping [R001](R001-omni-read-in-place-over-copy.md)'s
   economics honest.
