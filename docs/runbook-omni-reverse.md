@@ -194,10 +194,31 @@ Least privilege on the S3 side — read-only, scoped to the one bucket:
 
 ![AWS IAM role s3-read policy: GetObject/ListBucket on the bucket](img/omni-7-iam-s3-policy.png)
 
+## Unsupported BigQuery features in Omni
+
+Omni is not a full-feature BigQuery region. Per Google's documentation (verify
+against current docs — the list evolves), these do **not** work in Omni regions:
+
+- **DML** statements, and **DDL that manages data in BigQuery** (e.g. plain
+  `CREATE TABLE`).
+- **BigQuery ML** statements.
+- **JavaScript UDFs.**
+- **Streaming** (`tabledata.insertAll` / the Storage Write API).
+- **The BigQuery Storage Read API** — the big one for downstream design (see
+  below); it is unavailable in Omni regions.
+- **Materialized views** over the external data, and **CMEK** on Omni datasets /
+  external tables.
+- **Querying destination temporary tables** with `SELECT`.
+- **Result-size limits:** results > 256 MB with `ORDER BY` fail; results > 20 GiB
+  must be exported to S3 rather than returned.
+
+Scheduled queries work only via the API/CLI with `EXPORT DATA`. Not every
+BigQuery feature is covered here — confirm the specific ones your workload needs.
+
 ## Downstream consumers — the one that changes the design
 
-The intended consumers here are **Cloud Run, Compute Engine (Python), Dataflow,
-Bigtable, and AlloyDB**. The critical thing to internalize:
+The intended consumers here are **Cloud Run, Compute Engine (Python), Notebooks,
+Dataflow, Bigtable, and AlloyDB**. The critical thing to internalize:
 
 > **Omni is a query surface, not a shared storage layer for GCP.** An Omni
 > external table can be *queried* from BigQuery, but its bytes live in AWS. A
@@ -214,19 +235,31 @@ Two consumption shapes, and they have very different economics:
 
 Per consumer:
 
-- **Cloud Run / Compute Engine (Python).** Use the BigQuery client to run SQL
-  against the Omni table. Aggregates and filtered extracts come back through the
-  API cheaply. For a full extract, materialize first (below) or read S3 directly
-  with the service's own AWS credentials (bypasses Omni entirely).
+- **Cloud Run / Compute Engine (Python) / Notebooks.** Just the standard
+  BigQuery client (the Jobs API) — point it at the connection's dataset and run
+  SQL. **These clients do not need to run in the AWS region**; the query executes
+  where the data lives and the result is returned to them wherever they are.
+  Aggregates and filtered extracts come back cheaply; for a full extract,
+  materialize first (below) or read S3 directly with the client's own AWS
+  credentials (bypasses Omni entirely).
 - **Dataflow.** The high-throughput path (`BigQueryIO` via the **Storage Read
-  API**) does **not** support external/Omni tables. You must land the data
-  first — CTAS into a native BigQuery table, or `EXPORT DATA` to GCS — then read
-  that. (Or give Dataflow an S3 connector and read the Iceberg files directly,
-  skipping Omni.)
+  API**) does **not** support Omni tables. **Verified in this POC** with
+  [`scripts/omni_storage_read_test.py`](../scripts/omni_storage_read_test.py) —
+  a `create_read_session` on `omni_s3.orders` failed with
+  `InvalidArgument: 400 ... Read API can be used to read temporary tables only in
+  this region.` So you must land the data first — CTAS into a native BigQuery
+  table (co-located with the Dataflow job's region), or `EXPORT DATA` — then
+  read that. (Or give Dataflow an S3 connector and read the Iceberg files
+  directly, skipping Omni.)
 - **Bigtable / AlloyDB.** Neither can read S3 or an Omni table directly. Populate
   them from a **materialized GCP-side surface** (native BQ table or GCS export)
   via a pipeline (e.g. Dataflow). The cross-cloud transfer happens once, at
   materialization.
+
+**Region, in one line:** query-driven clients (Cloud Run, Compute, Notebooks)
+can live in any GCP region. Anything reading via the Storage Read API (Dataflow,
+Spark) must read a **materialized native table** and run **in that table's GCP
+region** — it can never read the Omni table directly.
 
 **Design consequence.** If your consumers mostly need *aggregates or slices*,
 Omni is ideal — push down in AWS, return small results, fan them out on GCP with
@@ -253,14 +286,18 @@ query-in-place when the results are small relative to the scan.
 
 Directional; confirm against current BigQuery pricing for your region.
 
-- **Scan (Omni compute).** On-demand ≈ **$6.25 / TiB scanned**, metered in the
-  AWS region. Partition/prune and select only needed columns — Iceberg + Parquet
-  make this effective, and the scanned bytes are what you pay for.
-- **Cross-cloud transfer.** Billed **per GB moved AWS→GCP** for results,
-  cross-cloud joins, and materialization. For query-and-return-small-result this
-  is a rounding error. For a full materialization it is the whole dataset size —
-  i.e. roughly the same order as a one-time copy's egress, which is exactly why
-  repeated full materialization is a false economy.
+- **Scan (Omni compute) = the "bytes billed" you see in the job.** On-demand ≈
+  **$6.25 / TiB scanned**, metered in the AWS region. Partition/prune and select
+  only needed columns — Iceberg + Parquet make this effective.
+- **Cross-cloud transfer is a SEPARATE line item — not part of bytes billed.**
+  The job's "bytes billed" reflects only the scan; it does **not** include
+  cross-cloud transfer. Transfer is billed **per GB moved AWS→GCP** and applies
+  when data physically crosses to GCP: cross-cloud joins, `CREATE TABLE AS
+  SELECT` into a GCP region, materialized views, and large result returns. For
+  query-and-return-small-result (like our POC — 151 B shuffled) it is a rounding
+  error. For a full materialization it is the whole dataset size — roughly a
+  one-time copy's egress, which is why repeated full materialization is a false
+  economy. Budget the two components independently.
 - **Reservations (does a commitment help?).** Yes, for **steady, heavy
   scanning**: buy BigQuery **Omni slot reservations** (Enterprise edition) in the
   AWS region instead of on-demand — the usual slot-commitment discount applies.

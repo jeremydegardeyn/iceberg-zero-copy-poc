@@ -14,7 +14,10 @@ facts force the design:
 
 1. **The BigQuery Storage Read API does not support external/Omni tables.**
    Anything that reads BigQuery at high throughput — Dataflow's `BigQueryIO`,
-   the Spark-BigQuery connector — cannot stream from an Omni table.
+   the Spark-BigQuery connector — cannot stream from an Omni table. **Verified**
+   in this POC ([`scripts/omni_storage_read_test.py`](../../scripts/omni_storage_read_test.py)):
+   a `create_read_session` on `omni_s3.orders` failed with `InvalidArgument: 400
+   ... Read API can be used to read temporary tables only in this region.`
 2. **Bigtable and AlloyDB can't read S3 or Omni at all.** They ingest from a
    pipeline over a GCP-resident source.
 
