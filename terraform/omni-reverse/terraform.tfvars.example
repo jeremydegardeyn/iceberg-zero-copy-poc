@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+project_id     = "your-gcp-project"
+aws_account_id = "123456789012"
+aws_region     = "us-east-1" # must be a BigQuery Omni region
+omni_bucket    = "your-omni-iceberg-bucket"
+
+# PHASE 2 — set after scripts/omni_write_iceberg.py prints METADATA_LOCATION,
+# then re-apply to create the BigQuery external table. Leave commented on the
+# first apply.
+# omni_metadata_uri = "s3://your-omni-iceberg-bucket/warehouse/demo/orders/metadata/00001-....metadata.json"

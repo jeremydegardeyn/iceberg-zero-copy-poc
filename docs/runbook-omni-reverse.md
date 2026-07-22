@@ -8,6 +8,10 @@ Executed successfully 2026-07-20 against a personal AWS account and the GCP
 project used throughout this POC. Screenshots below have the project name, AWS
 account id, and BigQuery identity redacted.
 
+Decisions behind this leg live in a separate ADR set,
+[`adr-omni-reverse/`](adr-omni-reverse/) (`R001`–`R005`). The control plane is
+codified in [`terraform/omni-reverse/`](../terraform/omni-reverse/).
+
 ## The key architectural difference
 
 In the GCS -> Snowflake direction, the consumer's compute lives in AWS and
@@ -30,6 +34,27 @@ away.
   editions do not work in Omni regions.
 - Local AWS credentials with S3 + IAM rights; `bq` CLI authed to the GCP
   project; `pyiceberg` for the table write (no Spark needed).
+
+## Terraform alternative (control plane)
+
+Steps 2–4 below are the manual (`aws`/`bq`) path, kept for understanding. The
+same **control plane** — the AWS IAM role + web-identity trust + S3 policy, the
+BigQuery connection, the dataset, and the external table — is codified as a
+standalone module in
+[`terraform/omni-reverse/`](../terraform/omni-reverse/). It breaks the
+connection↔identity circular dependency automatically and uses a two-phase apply
+for the table:
+
+```bash
+cd terraform/omni-reverse
+terraform init && terraform apply            # connection, role, policy, dataset, bucket
+python ../../scripts/omni_write_iceberg.py --bucket <omni_bucket>   # step 1 (data plane)
+terraform apply -var 'omni_metadata_uri=s3://.../metadata/00001-....metadata.json'
+```
+
+Only **step 1 (writing the Iceberg data)** stays a script — that is data-plane
+work, not infrastructure. Decisions behind this split:
+[ADR-R004](adr-omni-reverse/R004-terraform-control-plane-script-data-plane.md).
 
 ## 1. Land an Iceberg table in an Omni region (S3)
 
@@ -57,6 +82,10 @@ python scripts/omni_aws_role.py create --bucket <s3-bucket>
 # -> role ARN
 ```
 
+> **Terraform:** `aws_iam_role.omni` + `aws_iam_role_policy.omni_s3_read` in
+> [`terraform/omni-reverse/main.tf`](../terraform/omni-reverse/main.tf) — the
+> trust `sub` is wired to the connection identity automatically.
+
 ## 3. BigQuery Omni connection, then close the trust loop
 
 ```bash
@@ -66,6 +95,10 @@ bq mk --connection --connection_type='AWS' --location='aws-us-east-1' \
 
 python scripts/omni_aws_role.py trust --identity <NUMERIC_SUBJECT>
 ```
+
+> **Terraform:** `google_bigquery_connection.omni` — and because its
+> `iam_role_id` is a constructed string, there is no manual trust handshake;
+> `terraform apply` orders connection → role → policy for you.
 
 Then raise the role's max session duration to 12 hours — Omni requires it:
 
@@ -94,6 +127,9 @@ CREATE OR REPLACE EXTERNAL TABLE omni_s3.orders
 SELECT COUNT(*), ROUND(SUM(amount),2) FROM omni_s3.orders;
 -- returned 4 / 467.75 in the POC — compute ran in AWS, only the result crossed back
 ```
+
+> **Terraform:** `google_bigquery_dataset.omni` + `google_bigquery_table.orders`
+> (the table is the phase-2 resource, gated on `omni_metadata_uri`).
 
 The table registers as a `Lakehouse` external table whose source format is
 `ICEBERG`, pointing straight at the S3 `metadata.json` — no bytes copied into GCP:

@@ -10,14 +10,16 @@ Zero-copy sharing of GCS-resident Apache Iceberg tables to Snowflake on AWS, via
 - `docs/runbook.md` — index; per-path runbooks: `runbook-zero-copy.md` + `runbook-s3-replica.md`
 - `docs/as-run.md` — as-run log from the successful 2026-07-14 execution (fastest path to reproduce)
 - `docs/architecture/overview.md` — ARB diagrams (context, auth sequence, trust boundaries, decision flow)
-- `docs/adr/` — architecture decision records (index in `docs/adr/README.md`)
+- `docs/adr/` — architecture decision records, forward leg (index in `docs/adr/README.md`)
+- `docs/adr-omni-reverse/` — ADRs for the reverse leg / BigQuery Omni (`R001`–`R005`)
 - `env.example.sh` — copy to `env.sh`, fill in, `source` it (gitignored)
 - `scripts/` — GCP-side setup + pipeline execution, ordered
 - `sql/` — Snowflake-side setup, ordered
 - `dataflow/` — flex templates: streaming (Pub/Sub→Iceberg) + batch (CSV→Iceberg), shared Java-enabled launcher image
 - `trigger/` — Cloud Run functions: file-drop launcher + event-driven archive-on-success
 - `validation.yaml` + `scripts/validate.py` — config-driven integrity controls (source vs lake vs Snowflake)
-- `terraform/` — IaC for everything terraform-able (README documents what isn't and why)
+- `terraform/` — IaC for everything terraform-able, forward leg (README documents what isn't and why)
+- `terraform/omni-reverse/` — separate root module for the reverse leg (BigQuery Omni connection, AWS role/trust, dataset, external table)
 
 ## Execution order
 

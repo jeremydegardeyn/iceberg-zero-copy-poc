@@ -16,6 +16,16 @@ infra as code, and (b) the starting point if this graduates from POC.
 | `iam.tf` | Worker SA project roles, GCS service-agent Pub/Sub grant, Snowflake WIF principal grants |
 | `trigger_function.tf` | Cloud Run function (gen2) + Eventarc GCS trigger for the batch pipeline |
 
+## Reverse leg (BigQuery Omni) — separate module
+
+The reverse direction (reading S3-resident Iceberg from BigQuery Omni) lives in
+its own root module, **[`omni-reverse/`](omni-reverse/)**, because it spans two
+clouds (adds the AWS provider) and shouldn't force AWS credentials on this
+forward-leg apply. It codifies the BigQuery connection, the AWS IAM role +
+web-identity trust (breaking the connection↔identity circular dependency), the
+S3 read policy, the dataset, and the external Iceberg table. See its README for
+the two-phase apply.
+
 ## Adopting the already-created resources
 
 Everything exists, so `terraform apply` from scratch would collide. Import

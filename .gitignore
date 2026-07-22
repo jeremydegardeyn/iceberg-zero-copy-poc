@@ -6,6 +6,9 @@ __pycache__/
 terraform/.build/
 *.tfstate*
 .terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
 ~$*
 
 # Decks kept out of the public repo (may contain branded/internal assets)
