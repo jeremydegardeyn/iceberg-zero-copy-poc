@@ -246,6 +246,18 @@ wants `--iam_role_id` not `--properties` JSON; the role's MaxSessionDuration
 must be 12h (43200s); our other data was in us-east-2 which Omni does not cover;
 local numpy/pandas ABI mismatch needed `pandas>=2.2`.
 
+Also proven on this leg:
+- **Dataflow can't direct-read Omni** — `scripts/omni_storage_read_test.py` ran
+  the Storage Read API on `omni_s3.orders`: `InvalidArgument 400 ... Read API can
+  be used to read temporary tables only in this region.` (materialization required).
+- **Incremental CDC straight from S3** — `scripts/omni_incremental_cdc.py`
+  emitted only the new-snapshot rows (the diff) and published a later diff to a
+  Pub/Sub topic + pulled it back (topic torn down). Append-only scope.
+- **`EXPORT DATA` from Omni to S3** — granted a scoped `s3-export-write` policy,
+  ran `EXPORT DATA WITH CONNECTION ... OPTIONS(uri='s3://.../exports/orders/*')`,
+  BigQuery Omni wrote a Parquet file (4 rows) to S3; read it back, deleted it,
+  revoked write. Export runs in AWS, lands in S3 (not GCS).
+
 ## Teardown
 
 `sql/99_teardown.sql` in Snowflake, then `./scripts/99_teardown_gcp.sh`.

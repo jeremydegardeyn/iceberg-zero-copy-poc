@@ -231,12 +231,18 @@ AS SELECT * FROM omni_s3.orders WHERE <predicate>;
 Two things to know:
 
 - **Write permission.** The connection's IAM role must be able to **write** to
-  S3 (`s3:PutObject`). Our least-privilege role (`scripts/omni_aws_role.py`) is
-  read-only — for exports, add a `PutObject` statement on the export prefix, or
-  use a separate write-capable connection.
+  S3 (`s3:PutObject`). Our least-privilege role is read-only — grant a scoped
+  write with `python scripts/omni_aws_role.py grant-write --bucket <b>`
+  (and `revoke-write` to restore read-only afterward).
 - **It lands in S3, not GCP.** To consume the results in GCP you then read them
   back (Athena, the CDC reader, another Omni query) or cross-cloud transfer them.
   So a large-result workflow is: `EXPORT DATA` → S3 → consume/transfer.
+
+**Proven 2026-07-21.** Granted the scoped `s3-export-write` policy, ran the
+`EXPORT DATA` above against `omni_s3.orders`, and BigQuery Omni wrote a Parquet
+file to `s3://iceberg-poc-omni-jdg/exports/orders/000000000000` (1,356 bytes, 4
+rows); read it back to confirm content, then deleted it and revoked the write
+policy. The export ran from BigQuery (in AWS) — no separate AWS-side job.
 
 ## Downstream consumers — the one that changes the design
 

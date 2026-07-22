@@ -1,8 +1,10 @@
 """AWS IAM role for BigQuery Omni to assume (web-identity federation via
 accounts.google.com) with read access to the Omni S3 bucket.
 
-  create  -> role with placeholder trust + S3 read policy; prints role ARN
-  trust   -> tighten trust to the BQ connection's identity (sub)
+  create        -> role with placeholder trust + S3 read policy; prints role ARN
+  trust         -> tighten trust to the BQ connection's identity (sub)
+  grant-write   -> add a scoped s3:PutObject policy (for EXPORT DATA to S3)
+  revoke-write  -> remove it, restoring least-privilege read-only
 """
 import argparse
 import json
@@ -56,10 +58,41 @@ def trust(identity):
     print(f"trust updated: accounts.google.com sub = {identity}")
 
 
+def grant_write(bucket, prefix):
+    """Scoped write for `EXPORT DATA` — PutObject on the export prefix only."""
+    iam = boto3.client("iam")
+    iam.put_role_policy(RoleName=ROLE, PolicyName="s3-export-write", PolicyDocument=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": ["s3:PutObject", "s3:DeleteObject"],
+            "Resource": f"arn:aws:s3:::{bucket}/{prefix}*",
+        }],
+    }))
+    print(f"granted s3-export-write on s3://{bucket}/{prefix}*")
+
+
+def revoke_write():
+    iam = boto3.client("iam")
+    try:
+        iam.delete_role_policy(RoleName=ROLE, PolicyName="s3-export-write")
+        print("revoked s3-export-write (role back to read-only)")
+    except iam.exceptions.NoSuchEntityException:
+        print("s3-export-write not present")
+
+
 ap = argparse.ArgumentParser()
 sub = ap.add_subparsers(dest="cmd", required=True)
 c = sub.add_parser("create"); c.add_argument("--bucket", required=True)
-t = sub.add_parser("trust")
-t.add_argument("--identity", required=True)
+t = sub.add_parser("trust"); t.add_argument("--identity", required=True)
+g = sub.add_parser("grant-write"); g.add_argument("--bucket", required=True); g.add_argument("--prefix", default="exports/")
+sub.add_parser("revoke-write")
 args = ap.parse_args()
-create(args.bucket) if args.cmd == "create" else trust(args.identity)
+if args.cmd == "create":
+    create(args.bucket)
+elif args.cmd == "trust":
+    trust(args.identity)
+elif args.cmd == "grant-write":
+    grant_write(args.bucket, args.prefix)
+elif args.cmd == "revoke-write":
+    revoke_write()
