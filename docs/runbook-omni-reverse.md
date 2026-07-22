@@ -270,6 +270,46 @@ cheaper answer than re-materializing through Omni on every run. Reach for a
 cross-cloud MV when consumers are GCP-native and repeated; reach for pure Omni
 query-in-place when the results are small relative to the scan.
 
+## Alternative for streaming: incremental CDC straight from S3 (no Omni)
+
+Because Dataflow/Spark can't read Omni (above), the instinct for a **streaming
+sink** (Pub/Sub, Bigtable) is to materialize a GCP copy and stream from that.
+For an *incremental* load that is wasteful — you only need the **new** rows, and
+Iceberg's own metadata already describes them.
+
+Every commit is a snapshot; an `APPEND` snapshot's new manifest lists exactly
+the data files it added. So a consumer can read just the diff — plain Parquet in
+S3, read with the object store's credentials — with **no query engine, no
+Storage Read API, no Omni** in the path. This is, in effect, Iceberg CDC.
+
+[`scripts/omni_incremental_cdc.py`](../scripts/omni_incremental_cdc.py)
+implements it: track a snapshot **watermark**, walk snapshots added since it,
+read each one's ADDED data files, emit to a sink, advance the watermark.
+
+**Proven 2026-07-21** against `demo.orders`:
+
+```text
+sync #1 (no watermark)  -> full load, 4 rows, watermark set
+append a batch          -> new snapshot
+sync #2                 -> emitted ONLY the 3 new rows (the diff), not all 7
+sync #3                 -> "up to date — no snapshots since ..."
+end-to-end: appended again, published the diff to a Pub/Sub topic via the
+            script's sink, and pulled the 2 new rows back from a subscription.
+```
+
+```bash
+python scripts/omni_incremental_cdc.py append --rows 3                 # test snapshot
+python scripts/omni_incremental_cdc.py sync   --sink stdout            # see the diff
+python scripts/omni_incremental_cdc.py sync   --sink pubsub  --topic projects/<p>/topics/<t>
+python scripts/omni_incremental_cdc.py sync   --sink bigtable --instance <i> --table-bt <t> --key-column order_id
+```
+
+**Caveat:** this covers **append-only** tables (the common event/streaming
+case). Row-level deletes/overwrites (Iceberg delete files) need extra handling —
+see [ADR-R006](adr-omni-reverse/R006-direct-s3-incremental-cdc.md). Run it from a
+Cloud Run job, a scheduled container, or Dataflow with an S3 connector; give it
+a least-privilege S3 read role and a durable watermark.
+
 ## Zero-copy (Omni) vs physical copy (into GCS)
 
 | | **Omni read-in-place** | **Physical copy → GCS** (Storage Transfer) |

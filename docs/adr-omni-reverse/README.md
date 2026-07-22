@@ -18,6 +18,7 @@ Format: lightweight MADR. Status lifecycle: Proposed → Accepted → Superseded
 | [R003](R003-materialize-for-native-consumers.md) | Materialize a GCP-side copy for non-Omni native consumers | Accepted |
 | [R004](R004-terraform-control-plane-script-data-plane.md) | Terraform the control plane; script the data plane | Accepted |
 | [R005](R005-omni-region-placement.md) | Place Omni-consumed data in an Omni-supported region | Accepted |
+| [R006](R006-direct-s3-incremental-cdc.md) | Direct-from-S3 incremental CDC for streaming sinks, bypassing Omni | Accepted |
 
 Companion runbook:
 [`../runbook-omni-reverse.md`](../runbook-omni-reverse.md). Terraform:
