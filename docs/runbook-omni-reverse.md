@@ -9,7 +9,7 @@ project used throughout this POC. Screenshots below have the project name, AWS
 account id, and BigQuery identity redacted.
 
 Decisions behind this leg live in a separate ADR set,
-[`adr-omni-reverse/`](adr-omni-reverse/) (`R001`–`R005`). The control plane is
+[`adr-omni-reverse/`](adr-omni-reverse/) (`R001`–`R006`). The control plane is
 codified in [`terraform/omni-reverse/`](../terraform/omni-reverse/).
 
 ## The key architectural difference
@@ -22,6 +22,40 @@ S3 bucket's region, and executes the query next to the data. The raw data
 never leaves AWS during the scan; only the (usually small) result set returns
 to GCP. The per-scan bulk-egress problem of the other direction largely goes
 away.
+
+## When to use Omni (and when not)
+
+**Omni is a query window into the S3 lake, not a data-movement layer.** Use it
+when a human or a light app needs an *answer*; do not make it the integration
+layer that feeds GCP-native systems.
+
+**Good fit — light analysis:**
+
+- Ad-hoc / interactive analysis from **BigQuery, Cloud Run, notebooks**
+- **Cross-cloud joins** — enrich S3 data with native BigQuery tables
+- Aggregations, filtered slices, lookups, one-off reporting
+- When S3 stays authoritative and you want to avoid a GCS copy
+
+**Poor fit — operational syncing to GCP systems:**
+
+- Feeding Bigtable, AlloyDB, or Dataflow pipelines (no Storage Read API)
+- Anything needing streaming, DML, ML, or sub-second latency (read-only,
+  analytics-grade)
+- Materializing the full dataset on every run — that is just a copy with extra
+  steps, and it pays cross-cloud transfer each time
+- A load-bearing production dependency — it is region-locked and
+  feature-limited
+
+**But "not Omni" ≠ "can't feed GCP."** Pick the path by what the consumer needs:
+
+| Consumer need | Path | ADR |
+|---|---|---|
+| Light analysis / joins | Omni query-in-place | [R001](adr-omni-reverse/R001-omni-read-in-place-over-copy.md) |
+| Stream new rows to Bigtable / Pub/Sub | CDC snapshot-diff straight from S3 | [R006](adr-omni-reverse/R006-direct-s3-incremental-cdc.md) |
+| Batch-feed many GCP engines | Materialize to a native BQ table / GCS | [R003](adr-omni-reverse/R003-materialize-for-native-consumers.md) |
+
+**Rule of thumb:** consumer needs an *answer* → Omni. A GCP system needs the
+*data* → move it (CDC or materialize). Don't make Omni the integration layer.
 
 ## Prerequisites
 
