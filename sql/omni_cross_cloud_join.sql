@@ -8,7 +8,9 @@
 --
 -- The cross-cloud join runs in the colocated GCP region: BigQuery executes the
 -- Omni side in AWS, transfers the (smaller) result to us-east4, and joins there.
--- (A cross-cloud transfer cost applies, separate from bytes billed.)
+-- (A join applies egress AND separately-billed transfer-compute AND
+-- filtering-compute -- three meters, not one. See "Estimated cost" in
+-- docs/runbook-omni-reverse.md.)
 --
 -- Proven 2026-07-21 against omni_s3.orders + omni_join_ref.customer_dim.
 

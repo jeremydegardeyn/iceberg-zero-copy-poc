@@ -444,7 +444,7 @@ key/result), 8 s 213 ms elapsed, 0 B spilled:
 |---|---|---|
 | Data at rest | Single copy, in S3 | Two copies (S3 + GCS) |
 | Movement | Only query results cross | Full dataset on every sync |
-| Cost shape | In-AWS scan (per TB) + transfer on results | Egress once per sync, then GCP-local reads |
+| Cost shape | Egress (always) + up to 2 source-region compute meters, per operation — see "Estimated cost" | Egress once per sync, then GCP-local reads |
 | GCP engine reach | BigQuery / Spark only | **Any** GCP-native engine (Dataflow Storage API, AlloyDB load, etc.) |
 | Freshness | Live against S3 | As fresh as the last transfer |
 | Authoritative lake | Stays in S3 | Duplicated into GCS |
@@ -452,28 +452,43 @@ key/result), 8 s 213 ms elapsed, 0 B spilled:
 
 ## Estimated cost
 
-Directional; confirm against current BigQuery pricing for your region.
+**Not just "bytes processed."** Per Google's own comparison
+([`docs.cloud.google.com/bigquery/docs/omni-introduction`](https://docs.cloud.google.com/bigquery/docs/omni-introduction),
+Pricing section), up to **three separate cost meters** can apply, and which
+ones depend on the operation:
 
-- **Scan (Omni compute) = the "bytes billed" you see in the job.** On-demand ≈
-  **$6.25 / TiB scanned**, metered in the AWS region. Partition/prune and select
-  only needed columns — Iceberg + Parquet make this effective.
-- **Cross-cloud transfer is a SEPARATE line item — not part of bytes billed.**
-  The job's "bytes billed" reflects only the scan; it does **not** include
-  cross-cloud transfer. Transfer is billed **per GB moved AWS→GCP** and applies
-  when data physically crosses to GCP: cross-cloud joins, `CREATE TABLE AS
-  SELECT` into a GCP region, materialized views, and large result returns. For
-  query-and-return-small-result (like our POC — 151 B shuffled) it is a rounding
-  error. For a full materialization it is the whole dataset size — roughly a
-  one-time copy's egress, which is why repeated full materialization is a false
-  economy. Budget the two components independently.
-- **Reservations (does a commitment help?).** Yes, for **steady, heavy
-  scanning**: buy BigQuery **Omni slot reservations** (Enterprise edition) in the
-  AWS region instead of on-demand — the usual slot-commitment discount applies.
-  For exploratory or bursty use, on-demand is simpler and cheaper. Note a
-  reservation discounts **compute only** — it does **nothing** for cross-cloud
-  transfer, so it does not rescue a materialize-everything pattern.
+| Cost dimension | Cross-cloud **join** | Cross-cloud **materialized view** | Transfer via **SELECT** (CTAS/`INSERT INTO SELECT`) | Transfer via **LOAD** |
+|---|---|---|---|---|
+| **Egress** (AWS egress + inter-continental) | ✅ | ✅ | ✅ | ✅ |
+| **Compute — data transfer** (source-region slots, reservation or on-demand) | ✅ | Not used | ✅ | Not used |
+| **Compute — filtering** (source-region slots, reservation or on-demand) | ✅ | ✅ (builds/maintains the local MV + metadata) | ✅ | Not used |
+
+- **Egress applies to every cross-cloud operation, unconditionally.** It is
+  AWS's own egress + inter-continental charge, on top of anything BigQuery
+  bills — never assume it's covered by "bytes billed."
+- **Joins and SELECT-based transfers stack two separate compute meters** —
+  transfer-compute *and* filtering-compute — both slot-based (reservation or
+  on-demand) in the *source* AWS region. A plain query/join is not one number;
+  it is egress + two compute lines.
+- **LOAD-based transfer is the cheap outlier:** egress only, no separately
+  billed compute line.
+- **A plain `SELECT` against the Omni table (no join, no materialization, no
+  transfer)** — what most of this POC exercised — isn't one of the four
+  operations in this table; it incurs the filtering-compute meter (on-demand
+  ≈ bytes-scanned pricing, or a slot reservation) plus egress on whatever
+  result actually crosses back. Our proof measured that result at **151 B**
+  for a full-table read — the compute meter, not egress, dominates when the
+  result is that small.
+- **Reservations discount compute only.** Buying Omni slot reservations
+  (Enterprise edition) in the AWS region — instead of on-demand — applies to
+  the transfer-compute and filtering-compute lines. It does **nothing** for
+  egress, so it does not rescue a materialize-everything pattern.
 - **Storage.** One copy in S3 (S3 storage + request costs). No GCS duplicate
   unless you deliberately materialize.
+- **Exact current rates** (the on-demand $/TiB figure, the $/GB egress rate,
+  slot-reservation pricing) live on the BigQuery pricing page and change —
+  confirm there before quoting a number externally. Don't restate a cached
+  figure as current.
 
 ## Query latency / impact
 

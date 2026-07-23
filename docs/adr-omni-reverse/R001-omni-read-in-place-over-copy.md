@@ -40,8 +40,12 @@ materialization is cheaper as a scheduled replica (the mirror of
 ## Consequences
 
 - One copy of the data, in S3; GCS stays free of a duplicate.
-- No per-scan bulk egress; cost moves to in-AWS scan (~$6.25/TiB) + per-GB
-  transfer on results only.
+- No per-scan *bulk* egress; cost moves to in-AWS compute (billed per TB
+  scanned, or a slot reservation) plus egress on whatever result actually
+  crosses back — small for a filtered query (151 B measured), the full volume
+  for a join, transfer, or materialization. Egress is a distinct line item on
+  every cross-cloud operation, not folded into "bytes billed" — see the cost
+  breakdown in [runbook-omni-reverse.md](../runbook-omni-reverse.md).
 - Live reads against S3 — no sync-interval staleness.
 - Bounded reach and region lock become the design constraints, handled in
   [R003](R003-materialize-for-native-consumers.md) and
