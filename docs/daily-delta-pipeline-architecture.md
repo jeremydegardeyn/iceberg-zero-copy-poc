@@ -39,37 +39,36 @@ yesterday's copy at all.
 ```mermaid
 flowchart LR
   subgraph AWS[AWS - source cloud]
-    SRC[Source systems] --> ING[Ingest to lake]
-    ING --> LAKE[(AWS Iceberg lake<br/>S3)]
-    LAKE --> DIFF[[Daily delta<br/>Omni or Athena<br/>compute in AWS]]
-    DIFF --> DELTA[(Delta only<br/>S3)]
+    SRC[Source systems] --> ING[Ingest to Iceberg lake]
+    ING --> LAKE[(Iceberg lake<br/>S3)]
+    LAKE --> DIFF[[Daily delta<br/>BigQuery Omni<br/>compute in AWS]]
   end
-  DELTA -->|move only the delta| BQ
+  DIFF -->|delta only<br/>FDW pull or load| ADB
   subgraph GCP[GCP - system of record]
-    BQ[(BigQuery<br/>business logic + enrich<br/>analytical SoR)]
-    ADB[(AlloyDB<br/>CRUD config + admin)]
-    ADB -->|reference joins<br/>FDW or sync| BQ
-    BQ --> PUB[[Dataflow or Cloud Run<br/>publish change events]]
+    ADB[(AlloyDB<br/>pull delta + business logic<br/>config CRUD + serve)]
+    BQ[(BigQuery<br/>optional: heavy analytics)]
+    ADB -.->|analytical copy| BQ
+    ADB --> PUB[[Cloud Run or Dataflow<br/>publish change events]]
     PUB --> EEH([Pub/Sub<br/>EEH])
   end
   EEH --> SNOW[ServiceNow]
   EEH --> ANL[Analytics]
   EEH --> APPS[Downstream apps]
   ORCH[[Cloud Workflows + Scheduler<br/>daily, 30 min or less, no SPOF]] -.orchestrates.-> DIFF
-  ORCH -.-> BQ
+  ORCH -.-> ADB
   ORCH -.-> PUB
 ```
 
 | Flow step | Tool | Notes |
 |---|---|---|
 | Ingest to AWS lake | AWS-native (as-is) | Land as **Iceberg** — makes the diff cheap |
-| Daily delta / "CDC" | **Omni or Athena**, in AWS | Compute in place; emit only the delta. Iceberg snapshot compare if available |
+| Daily delta / "CDC" | **BigQuery Omni**, in AWS | Compute the day-over-day diff in place; emit only the delta. Iceberg snapshot compare if available |
 | Persist for next-day compare | S3 (Iceberg history) | No extra copy if Iceberg; else a dated snapshot in S3 |
-| Move delta to GCP | CTAS / cross-cloud transfer | One hop, delta-sized, into **BigQuery** |
-| Business logic + config rules | **BigQuery** SQL | Joins to admin/config tables; `MERGE` for transforms |
-| Enrich with other sources | **BigQuery** joins | "Enrich" = join the delta to reference/master data |
-| Store output | **BigQuery** (analytical SoR) + **AlloyDB** (if CRUD) | See Decision D2 |
-| Publish to EEH | **Dataflow or Cloud Run → Pub/Sub** | One change-event per delta row |
+| Move delta to GCP | FDW pull (small delta) or CTAS + bulk load (large) | One hop, delta-sized |
+| Business logic + config rules | **AlloyDB** SQL / PL-pgSQL | Native CRUD joins to admin/config tables |
+| Enrich with other sources | **AlloyDB** joins | Join the delta to reference/master data held in AlloyDB |
+| Store output + CRUD | **AlloyDB** (system of record) | Postgres CRUD; HA = no SPOF. BigQuery only if heavy BI (analytical copy) |
+| Publish to EEH | **Cloud Run job** (or Dataflow) → Pub/Sub | Read AlloyDB result table, one change-event per row |
 | ServiceNow + consumers | Subscribe to the EEH | Decouple ServiceNow behind Pub/Sub |
 | Orchestration | **Cloud Workflows + Scheduler** (or Composer) | All components serverless / no SPOF |
 
@@ -85,42 +84,66 @@ flowchart LR
 
 ## Decision log
 
-### D1 — Delta-compute engine: BigQuery Omni vs AWS-native (Athena/Glue/Spark)
+### D1 — Delta-compute engine → BigQuery Omni
 
-**Status: OPEN — decide by team ownership.** Both compute the delta in AWS and
-move only the result, so both satisfy the movement objective.
+**Status: DECIDED — BigQuery Omni.** The diff runs in AWS via Omni (SQL
+pushdown), so only the delta crosses to GCP, in a BigQuery control plane owned by
+the GCP team. Accept Omni's constraints (region-locked, read-only,
+analytics-grade, no DML/ML/streaming) — they don't bind the *diff* step, which is
+a batch `SELECT`. See [runbook-omni-reverse.md](runbook-omni-reverse.md).
 
-| | BigQuery Omni | Athena / Glue / Spark |
-|---|---|---|
-| Owner | GCP data team, one SQL control plane spanning both clouds | AWS data-eng team, native to the lake |
-| Maturity | Newer; region-locked, feature-limited (no DML/ML/streaming) | Mature, full-featured on Iceberg |
-| Result landing | One `CREATE TABLE AS SELECT` into BigQuery | Delta to S3, then load/transfer to BigQuery |
+### D2 — GCP-side store → AlloyDB (because they need CRUD)
 
-**Recommendation:** Omni if the pipeline is GCP-team-owned end to end; Athena/Glue
-if the lake team is on AWS and you want to avoid Omni's constraints.
+**Status: DECIDED (pending volume check) — AlloyDB as the system of record.**
+CRUD is a hard requirement and BigQuery is not an OLTP/CRUD store, so AlloyDB is
+the GCP-side store, transform engine, and serving layer. It pulls the Omni delta
+via the `bigquery_fdw` ([verified](adr-omni-reverse/R003-materialize-for-native-consumers.md)),
+applies business logic + config-rule joins in SQL, holds the output, and serves
+CRUD — one engine instead of a BigQuery+AlloyDB hybrid.
 
-### D2 — CRUD store: BigQuery-only vs BigQuery + AlloyDB
+Two guardrails:
 
-**Status: OPEN — needs the customer to define "CRUD".** This is the highest-leverage
-decision.
+- **Delta volume vs FDW throughput.** The FDW's query mode pulls results via
+  serial `getQueryResults` pagination — fine for a modest daily delta, a
+  bottleneck for a large one. For big deltas, have Omni **materialize the delta to
+  a native BigQuery table** and **bulk-load AlloyDB (`COPY`)** instead of pulling
+  through the FDW. Confirm the daily delta size to pick the path.
+- **Heavy BI.** If "analytics" means real warehouse-scale scans, keep **BigQuery**
+  as an optional analytical copy alongside AlloyDB — not on the operational path.
 
-- CRUD = **batch upsert of the daily delta** → **BigQuery `MERGE`**; no second store.
-- CRUD = **interactive, low-latency, row-level** updates (human-maintained config/
-  admin tables, or records ServiceNow edits back) → **AlloyDB** (BigQuery is not
-  OLTP). BigQuery can read AlloyDB live via the `bigquery_fdw`
-  ([verified](adr-omni-reverse/R003-materialize-for-native-consumers.md)) or you
-  sync it.
+### D3 — Pipeline shape: orchestrated-with-Omni vs single-engine-without-Omni
 
-**Recommendation:** most likely a **hybrid** — BigQuery as the analytical delta
-store, AlloyDB for CRUD config/admin and any operational serving. Confirm the
-meaning of CRUD before committing.
+**Status: DECIDED — orchestrated, because Omni is required (D1).** Omni is a SQL
+query step, not a Beam/Spark source, so "use Omni" and "one Dataflow/Spark job"
+do not coexist:
+
+- **(a) Orchestrated, with Omni (chosen):** Omni diff → land delta → AlloyDB
+  logic/CRUD → publisher → Pub/Sub, sequenced by Cloud Workflows. Multiple
+  serverless steps, Omni included.
+- **(b) Single Spark/Dataflow job, no Omni:** read the S3 Iceberg delta
+  **directly** (S3/Iceberg connector, bypassing Omni) → transform → AlloyDB +
+  Pub/Sub. One job, but Omni is out — and Spark/Dataflow can't read Omni anyway
+  (the spark-bigquery connector and `BigQueryIO` both use the Storage Read API,
+  which Omni doesn't support). Keep (b) in reserve if the "single engine"
+  constraint ever outweighs the "use Omni" one.
+
+Note on "Dataflow reading Omni via AlloyDB": technically possible (Dataflow
+`JdbcIO` → AlloyDB → FDW → Omni) and the only way to put Omni inside a Dataflow
+read — but it chains three systems synchronously and bottlenecks on the FDW.
+Prefer **staging**: AlloyDB lands the delta as a native table, then a Cloud Run
+job (or Dataflow) reads *that* to publish.
 
 ## Non-functional notes
 
-- **≤ 30 min / no SPOF:** every component (BigQuery, Dataflow, Cloud Run, Pub/Sub,
-  Workflows) is serverless / autoscaling. The SPOF risk hides in the **fan-out**:
-  use a Pub/Sub dead-letter topic, idempotent publish keyed by record id, and
-  retries on the ServiceNow call.
+- **≤ 30 min / no SPOF:** the serverless components (Omni/BigQuery, Cloud Run,
+  Pub/Sub, Workflows) are multi-zone with no single point of failure — BigQuery
+  is effectively active-active across zones within a region (99.99% SLA; a region
+  is the failure domain, cross-region needs opt-in managed DR). **AlloyDB is the
+  one component you must configure for HA** — enable the regional
+  primary + standby (automatic zonal failover); that is active-standby, not
+  multi-master, but it satisfies no-SPOF. The remaining SPOF risk hides in the
+  **fan-out**: use a Pub/Sub dead-letter topic, idempotent publish keyed by
+  record id, and retries on the ServiceNow call.
 - **"Lake → analytical → events" is not weird** — it is *compute deltas in batch,
   then emit them as discrete change events*. Standard integration shape.
 - **EEH = Pub/Sub?** Probably. If your EEH is managed Kafka/Confluent or Azure
