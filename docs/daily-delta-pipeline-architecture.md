@@ -43,19 +43,17 @@ flowchart LR
     ING --> LAKE[(Iceberg lake<br/>S3)]
     LAKE --> DIFF[[Daily delta<br/>BigQuery Omni<br/>compute in AWS]]
   end
-  DIFF -->|delta only<br/>FDW pull or load| ADB
+  DIFF -->|delta only<br/>FDW / load / CTAS| STORE
   subgraph GCP[GCP - system of record]
-    ADB[(AlloyDB<br/>pull delta + business logic<br/>config CRUD + serve)]
-    BQ[(BigQuery<br/>optional: heavy analytics)]
-    ADB -.->|analytical copy| BQ
-    ADB --> PUB[[Cloud Run or Dataflow<br/>publish change events]]
+    STORE[(GCP store + logic + enrich<br/>BigQuery OR AlloyDB<br/>choose by workload — see D2)]
+    STORE --> PUB[[Cloud Run or Dataflow<br/>publish change events]]
     PUB --> EEH([Pub/Sub<br/>EEH])
   end
   EEH --> SNOW[ServiceNow]
   EEH --> ANL[Analytics]
   EEH --> APPS[Downstream apps]
-  ORCH[[Cloud Workflows + Scheduler<br/>daily, 30 min or less, no SPOF]] -.orchestrates.-> DIFF
-  ORCH -.-> ADB
+  ORCH[[Composer — config-driven pattern<br/>daily, 30 min or less, no SPOF]] -.orchestrates.-> DIFF
+  ORCH -.-> STORE
   ORCH -.-> PUB
 ```
 
@@ -65,12 +63,12 @@ flowchart LR
 | Daily delta / "CDC" | **BigQuery Omni**, in AWS | Compute the day-over-day diff in place; emit only the delta. Iceberg snapshot compare if available |
 | Persist for next-day compare | S3 (Iceberg history) | No extra copy if Iceberg; else a dated snapshot in S3 |
 | Move delta to GCP | FDW pull (small delta) or CTAS + bulk load (large) | One hop, delta-sized |
-| Business logic + config rules | **AlloyDB** SQL / PL-pgSQL | Native CRUD joins to admin/config tables |
-| Enrich with other sources | **AlloyDB** joins | Join the delta to reference/master data held in AlloyDB |
-| Store output + CRUD | **AlloyDB** (system of record) | Postgres CRUD; HA = no SPOF. BigQuery only if heavy BI (analytical copy) |
-| Publish to EEH | **Cloud Run job** (or Dataflow) → Pub/Sub | Read AlloyDB result table, one change-event per row |
+| Business logic + config rules | **BigQuery or AlloyDB** SQL | In the chosen store (D2) — joins to admin/config tables |
+| Enrich with other sources | **BigQuery or AlloyDB** joins | Join the delta to reference/master data |
+| Store output | **BigQuery or AlloyDB** | Choose by workload — see D2 |
+| Publish to EEH | **Cloud Run job** (or Dataflow) → Pub/Sub | Read the result table, one change-event per row |
 | ServiceNow + consumers | Subscribe to the EEH | Decouple ServiceNow behind Pub/Sub |
-| Orchestration | **Cloud Workflows + Scheduler** (or Composer) | All components serverless / no SPOF |
+| Orchestration | **Composer** — a new config-driven pattern | Reuses existing framework (scheduling, alerting, error-analyzer). See "Framework fit" |
 
 ## Where BigQuery Omni fits
 
@@ -92,24 +90,81 @@ the GCP team. Accept Omni's constraints (region-locked, read-only,
 analytics-grade, no DML/ML/streaming) — they don't bind the *diff* step, which is
 a batch `SELECT`. See [runbook-omni-reverse.md](runbook-omni-reverse.md).
 
-### D2 — GCP-side store → AlloyDB (because they need CRUD)
+### D2 — GCP-side store: BigQuery or AlloyDB (choose by workload)
 
-**Status: DECIDED (pending volume check) — AlloyDB as the system of record.**
-CRUD is a hard requirement and BigQuery is not an OLTP/CRUD store, so AlloyDB is
-the GCP-side store, transform engine, and serving layer. It pulls the Omni delta
-via the `bigquery_fdw` ([verified](adr-omni-reverse/R003-materialize-for-native-consumers.md)),
-applies business logic + config-rule joins in SQL, holds the output, and serves
-CRUD — one engine instead of a BigQuery+AlloyDB hybrid.
+**Status: DECISION FRAMEWORK — pick per feed (it's a pattern config field, not a
+one-time platform choice).** Both are valid GCP stores for the delta output;
+the pattern (below) exposes `target.store: bigquery | alloydb`.
 
-Two guardrails:
+| Choose **BigQuery** when | Choose **AlloyDB** when |
+|---|---|
+| Output is analytical (BI, reporting, large scans) | Output needs interactive, row-level **CRUD** |
+| "CRUD" = **batch upsert** (`MERGE` the delta) | Users/apps maintain config/admin records live |
+| Consumers are analytics / warehouse-first | Operational serving, low-latency point reads |
+| Fewer moving parts, fully serverless | ServiceNow-style record lifecycle in the DB |
+| Large deltas (native scale, no FDW bottleneck) | Modest deltas (FDW pull) or bulk-load for large |
 
-- **Delta volume vs FDW throughput.** The FDW's query mode pulls results via
-  serial `getQueryResults` pagination — fine for a modest daily delta, a
-  bottleneck for a large one. For big deltas, have Omni **materialize the delta to
-  a native BigQuery table** and **bulk-load AlloyDB (`COPY`)** instead of pulling
-  through the FDW. Confirm the daily delta size to pick the path.
-- **Heavy BI.** If "analytics" means real warehouse-scale scans, keep **BigQuery**
-  as an optional analytical copy alongside AlloyDB — not on the operational path.
+Run **both** only if you genuinely have heavy-BI *and* interactive-CRUD needs:
+AlloyDB for CRUD/serving + BigQuery for analytics (AlloyDB → BQ copy, or BQ reads
+AlloyDB via the FDW). Default to one store.
+
+Guardrails either way:
+
+- **Delta volume vs FDW throughput.** AlloyDB's `bigquery_fdw` pulls via serial
+  `getQueryResults` — fine for a modest delta, a bottleneck for a large one; for
+  big deltas, materialize Omni → native BQ table → bulk-load AlloyDB (`COPY`).
+- **Colocation.** Landing the Omni delta in BigQuery uses a cross-cloud transfer
+  to the colocated region (`us-east4` for `aws-us-east-1`), not `us-east1`.
+
+## Framework fit — a new config-driven pattern, not a one-off
+
+This must slot into the existing **Composer** orchestration framework
+(config-driven: *"describe a pipeline in a small YAML file, and the framework
+turns it into a runnable, scheduled pipeline"*), alongside the `gcs_to_bigquery`
+and `dataform` patterns — **not** a bespoke DAG.
+
+Add it as a new pattern, `cross_cloud_delta`, following the existing structure:
+
+- `composer/dags/configs/cross_cloud_delta/<feed>.yaml` — one config per feed
+- `composer/dags/utils/cross_cloud_delta_utils.py` — `build_execution_string()`
+  + the launcher (run the Omni diff, land the delta to the chosen store, publish
+  to the EEH), mirroring `gcs_to_bigquery_utils.py`
+- register it in the DAG factory's execution dispatch
+
+The DAG reuses the framework's **scheduling, alerting, and the shared
+error-analyzer** for free. A new cross-cloud feed then becomes *one YAML file*:
+
+```yaml
+# configs/cross_cloud_delta/orders_delta.yaml
+dag_attr:
+  tags: [{ name: "orders" }, { name: "cross-cloud" }]
+  alert_after_run_minutes: 25
+workflow_type: "omni_delta"
+schedules:
+  - interval: "0 5 * * *"
+    timezone: "America/New_York"
+    executions:
+      cross_cloud_delta:
+        source:                              # AWS Iceberg lake via BigQuery Omni
+          omni_connection: "aws-us-east-1.omni_s3_conn"
+          dataset: "omni_s3"
+          table: "orders"
+          key_columns: ["order_id"]
+          compare: "snapshot"                # day-over-day (or iceberg_snapshot)
+        target:                              # GCP store — the D2 choice, per feed
+          store: "bigquery"                  # bigquery | alloydb
+          dataset: "curated"
+          table: "orders_delta"
+          write: "merge"
+        enrich:
+          config_tables: ["ref.customer_dim"]
+        sink:
+          topic: "projects/{{ project }}/topics/orders-changes"   # EEH
+```
+
+That is the answer to "am I building a one-off": no — you are adding **one
+pattern** to the framework, after which every cross-cloud delta feed is
+config-only. The `store` field makes D2 a per-feed decision, not a platform fork.
 
 ### D3 — Pipeline shape: orchestrated-with-Omni vs single-engine-without-Omni
 
@@ -117,9 +172,10 @@ Two guardrails:
 query step, not a Beam/Spark source, so "use Omni" and "one Dataflow/Spark job"
 do not coexist:
 
-- **(a) Orchestrated, with Omni (chosen):** Omni diff → land delta → AlloyDB
-  logic/CRUD → publisher → Pub/Sub, sequenced by Cloud Workflows. Multiple
-  serverless steps, Omni included.
+- **(a) Orchestrated, with Omni (chosen):** Omni diff → land delta → store
+  logic/CRUD → publisher → Pub/Sub, sequenced by the **Composer
+  `cross_cloud_delta` pattern** (see Framework fit). Multiple serverless steps,
+  Omni included.
 - **(b) Single Spark/Dataflow job, no Omni:** read the S3 Iceberg delta
   **directly** (S3/Iceberg connector, bypassing Omni) → transform → AlloyDB +
   Pub/Sub. One job, but Omni is out — and Spark/Dataflow can't read Omni anyway
