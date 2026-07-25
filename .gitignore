@@ -14,3 +14,8 @@ terraform/.build/
 # Decks kept out of the public repo (may contain branded/internal assets)
 *.pptx
 *.ppt
+
+# benchmark run state (local, per-run)
+bench_diff_state.json
+bench_cat.db
+omni_cat.db
