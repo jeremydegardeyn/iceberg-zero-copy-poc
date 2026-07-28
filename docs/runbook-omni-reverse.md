@@ -280,6 +280,46 @@ file to `s3://iceberg-poc-omni-jdg/exports/orders/000000000000` (1,356 bytes, 4
 rows); read it back to confirm content, then deleted it and revoked the write
 policy. The export ran from BigQuery (in AWS) — no separate AWS-side job.
 
+## Network path — control plane, data plane, and S3
+
+Relevant to any environment where public internet or inter-cloud connectivity is
+restricted. **Two hops:**
+
+**1. Control plane (GCP) → data plane (AWS).** Per Google's docs: *"BigQuery data
+plane receives the query from the control plane through a VPN connection"*, and
+results return the same way. This is **Google-managed** — you neither provision
+nor route it, and your egress policy does not govern it.
+
+**2. Data plane → your S3 bucket.** The docs are silent, so we tested it.
+
+**Proven 2026-07-28.** We applied a bucket policy denying `s3:GetObject` /
+`s3:ListBucket` to **any** principal whose request did not arrive via a VPC
+endpoint (`Condition: {"Null": {"aws:SourceVpce": "true"}}`):
+
+| Requester | Result |
+|---|---|
+| Our own credentials (public internet) | **AccessDenied** — policy confirmed live |
+| BigQuery Omni | **SUCCEEDED**, 856,686,592 bytes scanned |
+
+**Omni's S3 reads arrive through a VPC endpoint — they do not cross the public
+internet.** (Policy removed after the test; bucket restored to no-policy.)
+
+**Whose endpoint is it?** Not yours. Our AWS account has **zero** VPC endpoints
+and one untouched default VPC — we never created any networking. The endpoint
+lives in **Google's** AWS infrastructure, pre-existing and service-managed. So:
+
+- **No network work is required** — no VPC endpoint to provision, no PrivateLink
+  request, no peering, no firewall change. Setup remains an IAM role + trust.
+- **But it is opaque.** You cannot see it in your console, attach flow logs, or
+  restrict access to *your* endpoint. Private, but not inspectable — a
+  governance question rather than a connectivity one.
+
+> **Sharp edge to check before committing:** a bucket policy pinning a *specific*
+> endpoint id (`"StringEquals": {"aws:SourceVpce": "vpce-xxxx"}`) — common
+> hardening — would **block Omni**, since Omni arrives via Google's endpoint, not
+> yours. We tested the generic "any VPC endpoint" form, which Omni passes. We did
+> **not** test pinning. Verify against your organisation's S3 bucket standard.
+
 ## Downstream consumers — the one that changes the design
 
 The intended consumers here are **Cloud Run, Compute Engine (Python), Notebooks,
