@@ -314,11 +314,50 @@ lives in **Google's** AWS infrastructure, pre-existing and service-managed. So:
   restrict access to *your* endpoint. Private, but not inspectable — a
   governance question rather than a connectivity one.
 
-> **Sharp edge to check before committing:** a bucket policy pinning a *specific*
-> endpoint id (`"StringEquals": {"aws:SourceVpce": "vpce-xxxx"}`) — common
-> hardening — would **block Omni**, since Omni arrives via Google's endpoint, not
-> yours. We tested the generic "any VPC endpoint" form, which Omni passes. We did
-> **not** test pinning. Verify against your organisation's S3 bucket standard.
+### Pinning a specific endpoint blocks Omni — tested 2026-07-29
+
+The generic form above ("came via *some* endpoint") is the permissive one. The
+common enterprise standard is stricter: deny unless the request arrived via
+**one named endpoint**, the organisation's own. We tested that form:
+
+```json
+{"Effect": "Deny", "Principal": "*",
+ "Action": ["s3:GetObject", "s3:ListBucket"],
+ "Condition": {"StringNotEquals": {"aws:SourceVpce": "vpce-0123456789abcdef0"}}}
+```
+
+| Requester | Result |
+|---|---|
+| Our own credentials | **AccessDenied** — policy confirmed live |
+| BigQuery Omni | **BLOCKED** |
+
+Omni's error, verbatim:
+
+> `BigQuery received AccessDenied from S3 for 'LIST_OBJECT' on bucket '<bucket>'
+> path 'bench-diff/day2/' in region 'us-east-1' using Connection
+> '<project>.aws-us-east-1.omni_s3_conn'. This could be due to insufficient
+> permission, or the path doesn't exist.`
+
+Note the error blames permissions, not the network — a team debugging this
+without knowing about the endpoint condition will chase the IAM policy for a
+long time. The failed query billed **0 bytes**. Policy removed after the test;
+the follow-up query succeeded, confirming nothing else changed.
+
+Reproduce with `scripts/omni_vpce_policy_test.py --mode loose|pinned`.
+
+**What this means.** If your S3 bucket standard mandates a pinned endpoint id,
+Omni is incompatible with it as written, and no amount of IAM tuning fixes it —
+the request simply does not arrive through your endpoint. Options, none free:
+
+- Carve an exception for Omni-shared buckets, controlling access by **principal**
+  (the one federated role) plus GCP-side VPC-SC rather than by network origin.
+- Discover Google's endpoint id from CloudTrail S3 data events (`vpcEndpointId`)
+  and allow-list it alongside your own. **Untested here**, and Google documents
+  neither the id nor any commitment to keeping it stable — treat as fragile.
+- Do not use Omni for buckets governed by that standard.
+
+This is the single most likely blocker in a regulated environment, and it is a
+policy-standards conversation, not an engineering one.
 
 ## Downstream consumers — the one that changes the design
 
@@ -574,3 +613,54 @@ bq rm -r -f -d <project>:omni_s3
 bq rm -f --connection --location=aws-us-east-1 omni_s3_conn
 # AWS: delete role bq-omni-s3-reader, empty + delete the S3 bucket
 ```
+
+## Lake Formation-governed Glue databases — tested 2026-07-30
+
+Everything above assumes the Glue catalog is governed by **plain IAM**. By
+default Lake Formation grants `Super` to the pseudo-group
+`IAMAllowedPrincipals` on every database and table, which is what makes plain
+IAM sufficient. Revoke that (the normal step when adopting Lake Formation) and
+IAM becomes necessary but not sufficient. We tested all four states against a
+throwaway `lf_test` database over the same S3 data:
+
+| State | Result |
+|---|---|
+| Plain IAM, `IAMAllowedPrincipals` intact | **Works** — 30,020,000 rows |
+| LF-governed, role has no LF grant | **Blocked** |
+| LF-governed, role granted `DESCRIBE` + `SELECT` | **Works** — 30,020,000 rows |
+| LF column grant, 2 of 6 columns | **Enforced** — only 2 columns visible |
+
+The block is unambiguous:
+
+> `Access Denied: BigQuery BigQuery: Permission denied when accessing the AWS
+> Glue resource; querying table lf_test.lf_orders`
+
+**Grant Lake Formation permissions to the IAM role**, not to a user — the
+federated web-identity session is evaluated against the role ARN:
+
+```python
+lf.grant_permissions(
+    Principal={'DataLakePrincipalIdentifier': '<role arn>'},
+    Resource={'Database': {'Name': '<db>'}}, Permissions=['DESCRIBE'])
+lf.grant_permissions(
+    Principal={'DataLakePrincipalIdentifier': '<role arn>'},
+    Resource={'Table': {'DatabaseName': '<db>', 'Name': '<table>'}},
+    Permissions=['SELECT', 'DESCRIBE'])
+```
+
+**Column-level grants propagate into the BigQuery schema.** With `SELECT` on
+only `order_id` and `amount`, BigQuery saw a two-column table; querying
+`payload` failed with `Unrecognized name: payload`. The withheld columns are
+not filtered at query time — they are absent from the schema entirely.
+
+Two gotchas when granting columns: a column-scoped grant conflicts with an
+existing table-level `SELECT`/`DESCRIBE` (revoke those first, or
+`GrantPermissions` returns `InvalidInputException: Permissions modification is
+invalid`), and `DESCRIBE` is not valid on a `TableWithColumns` resource —
+grant `SELECT` only.
+
+**The limit.** This is enforced at the **catalog** layer. The role's
+`s3:GetObject` still reaches the whole object, and we confirmed all six
+columns remain physically present in the Parquet files. Omni does not use Lake
+Formation credential vending, so column-level secrecy is not a storage-layer
+guarantee against anyone who can assume the role.
